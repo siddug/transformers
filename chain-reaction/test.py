@@ -3,8 +3,12 @@ from main import Block, Chain
 
 class Translator(Block):
     def __init__(self, language: str = "Telugu"):
+        import os
         super().__init__(name=f"Translator to {language}", description=f"Translate the text to {language}")
-        self.llm = Mistral(api_key="jCuSP6YJybcKBiI50STjl5r1Kda0Cimi")
+        mistral_api_key = os.environ.get("MISTRAL_API_KEY")
+        if not mistral_api_key:
+            raise ValueError("MISTRAL_API_KEY environment variable not set")
+        self.llm = Mistral(api_key=mistral_api_key)
         self.language = language
     
     def prepare(self, context):
