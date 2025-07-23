@@ -1,10 +1,11 @@
 from llm import Mistral
-from main import Block
+from main import Block, Chain
 
 class Translator(Block):
-    def __init__(self):
-        super().__init__(name="Translator", description="Translate the text to Telugu")
+    def __init__(self, language: str = "Telugu"):
+        super().__init__(name=f"Translator to {language}", description=f"Translate the text to {language}")
         self.llm = Mistral(api_key="jCuSP6YJybcKBiI50STjl5r1Kda0Cimi")
+        self.language = language
     
     def prepare(self, context):
         return {
@@ -12,7 +13,7 @@ class Translator(Block):
                 {
                     "role": "user",
                     "content": f"""
-                    You are a translator. Translate the following text to Telugu.
+                    You are a translator. Translate the following text to {self.language}.
                     {context["text"]}
                     Return only the translated text. Do not include any other text.
                     """,
@@ -25,14 +26,26 @@ class Translator(Block):
         return self.llm.generate_text(model="mistral-large-latest", messages=prepare_response["messages"])
 
     def post_process(self, context, prepare_response, execute_response):
-        context["response"] = execute_response
+        context["text"] = execute_response
 
 
 # test code
 if __name__ == "__main__":  # Fixed: __ not **
-    trans = Translator()
+
+    # Simple block
+    telugu = Translator(language="Telugu")
     context = {
         "text": "Hello, how are you?"
     }
-    result = trans.run(context=context)
-    print(result)
+    telugu.run(context=context)
+    print(context)
+
+    # Simple chain telugu -> hindi
+    hindi = Translator(language="Hindi")
+    telugu >> "default" >> hindi
+    context = {
+        "text": "I like music"
+    }
+    chain = Chain(starting_block=telugu)
+    chain.run(context=context)
+    print(context)
