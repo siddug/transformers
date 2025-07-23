@@ -1,5 +1,9 @@
 from llm import Mistral
 from main import Block, Chain
+from dotenv import load_dotenv
+import os
+
+load_dotenv()  # take environment variables from .env.
 
 class Translator(Block):
     def __init__(self, language: str = "Telugu"):
