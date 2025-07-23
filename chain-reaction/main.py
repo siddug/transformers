@@ -66,8 +66,8 @@ class Block:
 
     # This is for the case a >> b
     def __rshift__(self, other):
-        self.src.next_blocks["default"] = other
-        return self.src
+        self.next_blocks["default"] = other
+        return self
 
 # Handy helper so that we can easily define chaining b/n blocks like a - "name" >> b
 class HelperDefinition:
@@ -82,7 +82,7 @@ class HelperDefinition:
 
 class Chain(Block):
     def __init__(self, name: str = None, description: str = None, starting_block: Block = None):
-        super().__init__(name=name, description=description, retries=0, retry_delay=0)
+        super().__init__(name=name, description=description, retries=1, retry_delay=0)
         self.starting_block = starting_block
 
     def start(self, start: Block):
