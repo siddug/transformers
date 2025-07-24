@@ -19,7 +19,9 @@ RUN pip install --no-cache-dir \
     alembic \
     qdrant-client \
     redis \
-    rq
+    rq \
+    minio \
+    python-multipart
 
 # Copy application code
 COPY . .

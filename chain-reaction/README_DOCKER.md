@@ -1,6 +1,6 @@
 # Docker Setup for Chain Reaction
 
-This project includes a complete Docker setup with FastAPI, PostgreSQL, Qdrant, and Redis.
+This project includes a complete Docker setup with FastAPI, PostgreSQL, Qdrant, Redis, MinIO, and Next.js UI.
 
 ## Services
 
@@ -9,6 +9,8 @@ This project includes a complete Docker setup with FastAPI, PostgreSQL, Qdrant, 
 - **Qdrant**: Vector database (ports 6333, 6334)
 - **Redis**: Cache and job queue (port 6379)
 - **Worker**: RQ worker for background jobs
+- **MinIO**: S3-compatible object storage (port 9000, console on 9001)
+- **Next.js**: Web UI (port 3000)
 
 ## Quick Start
 
@@ -23,9 +25,11 @@ docker-compose up --build
 ```
 
 3. Access the services:
+- Next.js UI: http://localhost:3000
 - FastAPI: http://localhost:8000
 - API Docs: http://localhost:8000/docs
 - Health Check: http://localhost:8000/health
+- MinIO Console: http://localhost:9001 (login: minioadmin/minioadmin)
 
 ## API Endpoints
 
@@ -60,6 +64,29 @@ curl -X POST http://localhost:8000/tasks/batch-translate \
 curl -X POST http://localhost:8000/tasks/vector-embedding \
   -H "Content-Type: application/json" \
   -d '{"text": "Sample text for embedding", "collection_name": "documents"}'
+```
+
+### S3 File Operations
+
+1. Upload a file:
+```bash
+curl -X POST http://localhost:8000/files/upload \
+  -F "file=@/path/to/your/file.txt"
+```
+
+2. List files:
+```bash
+curl http://localhost:8000/files
+```
+
+3. Download a file:
+```bash
+curl http://localhost:8000/files/filename.txt -o downloaded.txt
+```
+
+4. Delete a file:
+```bash
+curl -X DELETE http://localhost:8000/files/filename.txt
 ```
 
 ## Development
