@@ -186,3 +186,46 @@ Thumbs.db
 *.bak
 *.backup
 
+
+# UI gitignore
+# See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
+
+# dependencies
+/chain-reaction-ui/node_modules
+/chain-reaction-ui/.pnp
+/chain-reaction-ui/.pnp.*
+/chain-reaction-ui/.yarn/*
+!/chain-reaction-ui/.yarn/patches
+!/chain-reaction-ui/.yarn/plugins
+!/chain-reaction-ui/.yarn/releases
+!/chain-reaction-ui/.yarn/versions
+
+# testing
+/chain-reaction-ui/coverage
+
+# next.js
+/chain-reaction-ui/.next/
+/chain-reaction-ui/out/
+
+# production
+/chain-reaction-ui/build
+
+# misc
+/chain-reaction-ui/.DS_Store
+/chain-reaction-ui/*.pem
+
+# debug
+/chain-reaction-ui/npm-debug.log*
+/chain-reaction-ui/yarn-debug.log*
+/chain-reaction-ui/yarn-error.log*
+/chain-reaction-ui/.pnpm-debug.log*
+
+# env files (can opt-in for committing if needed)
+/chain-reaction-ui/.env*
+
+# vercel
+/chain-reaction-ui/.vercel
+
+# typescript
+/chain-reaction-ui/*.tsbuildinfo
+/chain-reaction-ui/next-env.d.ts
