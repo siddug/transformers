@@ -1,10 +1,14 @@
 import re
 from requests import Request
-from fastapi import FastAPI
+from fastapi import FastAPI, Depends
+from sqlalchemy.orm import Session
+from sqlalchemy import text
 from apps.translator import Translator
 from apps.grounded_gpt import Search, Draft, Main
 from main import Chain
 from pydantic import BaseModel
+from database import get_db, qdrant_client, task_queue
+from tasks import long_running_task, process_translation_batch, process_vector_embedding
 
 # This is a qucik api server to test the chain reaction apps
 app = FastAPI()
@@ -12,6 +16,44 @@ app = FastAPI()
 @app.get("/")
 def read_root():
     return {"message": "Hello, World!", "status": "ok"}
+
+@app.get("/health")
+def health_check(db: Session = Depends(get_db)):
+    health_status = {
+        "status": "healthy",
+        "services": {
+            "postgres": False,
+            "redis": False,
+            "qdrant": False
+        }
+    }
+    
+    # Check PostgreSQL
+    try:
+        db.execute(text("SELECT 1"))
+        health_status["services"]["postgres"] = True
+    except Exception as e:
+        print(f"PostgreSQL health check failed: {e}")
+    
+    # Check Redis
+    try:
+        task_queue.connection.ping()
+        health_status["services"]["redis"] = True
+    except Exception as e:
+        print(f"Redis health check failed: {e}")
+    
+    # Check Qdrant
+    try:
+        qdrant_client.get_collections()
+        health_status["services"]["qdrant"] = True
+    except Exception as e:
+        print(f"Qdrant health check failed: {e}")
+    
+    # Update overall status
+    if not all(health_status["services"].values()):
+        health_status["status"] = "degraded"
+    
+    return health_status
 
 
 # App 1: Translator
@@ -49,7 +91,6 @@ def run_translate_chain(request: TranslateRequest):
 
 
 # App 3: Grounded GPT
-
 class GroundedGPTRequest(BaseModel):
     query: str
 
@@ -67,8 +108,3 @@ def run_grounded_gpt(request: GroundedGPTRequest):
     chain = Chain(starting_block=main)
     chain.run(context=context)
     return context
-
-
-
-
-
