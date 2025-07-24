@@ -2,9 +2,9 @@ import re
 from requests import Request
 from fastapi import FastAPI
 from apps.translator import Translator
+from apps.grounded_gpt import Search, Draft, Main
 from main import Chain
 from pydantic import BaseModel
-
 
 # This is a qucik api server to test the chain reaction apps
 app = FastAPI()
@@ -46,6 +46,28 @@ def run_translate_chain(request: TranslateRequest):
     chain.run(context=context)
 
     return context
+
+
+# App 3: Grounded GPT
+
+class GroundedGPTRequest(BaseModel):
+    query: str
+
+@app.post("/chain/samples/grounded-gpt")
+def run_grounded_gpt(request: GroundedGPTRequest):
+    search = Search(retries=3)
+    draft = Draft(retries=3)
+    main = Main()
+    search >> main
+    main - "draft" >> draft
+    main - "search" >> search
+    context = {
+        "query": request.query or "What's the weather today in Singapore?"
+    }
+    chain = Chain(starting_block=main)
+    chain.run(context=context)
+    return context
+
 
 
 

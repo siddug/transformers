@@ -1,8 +1,8 @@
 from dotenv import load_dotenv
 import os
 
-from llm import Mistral
-from llm import Gemini
+from utils.llm import Mistral
+from utils.llm import Gemini
 from main import Block
 
 
@@ -51,4 +51,4 @@ class Translator(Block):
         return "default" # same as not returning any action
 
     def execute_fallback(self, context, prepare_response, error):
-        return "Error: " + str(error) + " " + self.mistral_api_key
+        return "Error: " + str(error)
