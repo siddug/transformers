@@ -1,3 +1,6 @@
+import Link from 'next/link';
+import Button from '@/components/Button';
+
 export default function Home() {
   return (
     <div>
@@ -12,12 +15,11 @@ export default function Home() {
           <p className="text-gray-600 mb-4">
             Translate text into different languages using our AI-powered translation service.
           </p>
-          <a
-            href="/translator"
-            className="inline-block px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
-          >
-            Try Translator →
-          </a>
+          <Link href="/translator">
+            <Button>
+              Try Translator →
+            </Button>
+          </Link>
         </div>
         
         <div className="bg-white p-6 rounded-lg shadow border border-gray-200">
@@ -25,12 +27,11 @@ export default function Home() {
           <p className="text-gray-600 mb-4">
             Chain multiple translations together to see how text transforms through different languages.
           </p>
-          <a
-            href="/translator-chain"
-            className="inline-block px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
-          >
-            Try Chain →
-          </a>
+          <Link href="/translator-chain">
+            <Button>
+              Try Chain →
+            </Button>
+          </Link>
         </div>
       </div>
       
