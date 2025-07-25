@@ -25,6 +25,12 @@ class Mistral(LLM):
     models = {
         "mistral-large-latest": {
             "supportsImages": True,
+        },
+        "mistral-embed": {
+            "supportsEmbeddings": True,
+        },
+        "codestral-embed": {
+            "supportsEmbeddings": True,
         }
     }
 
@@ -71,8 +77,6 @@ class Mistral(LLM):
 
         formatted_messages = self.format_messages(messages)
 
-        print("CHECKING MODEL", self.model)
-
         body = {
             "model": self.model,
             "messages": formatted_messages,
@@ -93,7 +97,37 @@ class Mistral(LLM):
             raise Exception(f"Failed to generate text: {response.status_code} {response.text}")
         
         return response.json()["choices"][0]["message"]["content"]
-    
+
+    def generate_embeddings(self, text: str, model: str = None):
+        if model is not None and model in self.models:
+            self.model = model
+
+        if self.model not in self.models:
+            raise Exception(f"Model {self.model} not supported")
+
+        if not self.models[self.model]["supportsEmbeddings"]:
+            raise Exception(f"Model {self.model} does not support embeddings")
+        
+        body = {
+            "model": self.model,
+            "input": text,
+            "output_dtype": "float"
+        }
+
+        response = requests.post(
+            "https://api.mistral.ai/v1/embeddings",
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {self.api_key}"
+            },
+            json=body
+        )
+
+        if response.status_code != 200:
+            raise Exception(f"Failed to generate embeddings: {response.status_code} {response.text}")
+
+        return response.json()["data"][0]["embedding"]
+        
 
     
 class Gemini(LLM):
@@ -101,6 +135,9 @@ class Gemini(LLM):
     models = {
         "gemini-2.0-flash": {
             "supportsImages": True,
+        },
+        "gemini-embedding-001": {
+            "supportsEmbeddings": True,
         }
     }
 
@@ -185,3 +222,41 @@ class Gemini(LLM):
         
         return response.json()["candidates"][0]["content"]["parts"][0]["text"]
     
+    def generate_embeddings(self, text: str, model: str = None):
+        if model is not None and model in self.models:
+            self.model = model
+
+        if self.model not in self.models:
+            raise Exception(f"Model {self.model} not supported")
+        
+        if not self.models[self.model]["supportsEmbeddings"]:
+            raise Exception(f"Model {self.model} does not support embeddings")
+
+        body = {
+            "content": {
+                "parts": [
+                    {
+                        "text": text
+                    }
+                ]
+            },
+            "model": f"models/{self.model}"
+        }
+
+        headers = {
+            "Content-Type": "application/json",
+            "x-goog-api-key": self.api_key
+        }
+
+        response = requests.post(
+            "https://generativelanguage.googleapis.com/v1beta/models/" + self.model + ":embedContent",
+            json=body,
+            headers=headers
+        )
+
+        if response.status_code != 200:
+            raise Exception(f"Failed to generate embeddings: {response.status_code} {response.text}")
+
+        return response.json()["embedding"]["values"]
+
+

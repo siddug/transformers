@@ -1,6 +1,8 @@
 'use client';
 
 import { useState } from 'react';
+import Select from '@/components/Select';
+import Button from '@/components/Button';
 
 export default function TranslatorChainPage() {
   const [text, setText] = useState('');
@@ -53,7 +55,7 @@ export default function TranslatorChainPage() {
 
   return (
     <div className="max-w-4xl">
-      <h1 className="text-3xl font-bold mb-6">Translator Chain</h1>
+      <h1 className="text-3xl font-bold mb-1">Translator Chain</h1>
       <p className="text-gray-600 mb-8">Chain multiple translations through different languages</p>
 
       <div className="space-y-6">
@@ -64,7 +66,7 @@ export default function TranslatorChainPage() {
           <textarea
             value={text}
             onChange={(e) => setText(e.target.value)}
-            className="w-full p-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+            className="w-full p-3 border border-gray-300 rounded focus:outline-none"
             rows="4"
             placeholder="Enter text to translate..."
           />
@@ -75,17 +77,14 @@ export default function TranslatorChainPage() {
             <label className="block text-sm font-medium text-gray-700">
               Translation Chain
             </label>
-            <button
+            <Button
               onClick={handleAddLanguage}
               disabled={languages.length >= 5}
-              className={`px-4 py-2 text-sm rounded-lg font-medium transition-colors ${
-                languages.length >= 5
-                  ? 'bg-gray-300 text-gray-500 cursor-not-allowed'
-                  : 'bg-green-600 text-white hover:bg-green-700'
-              }`}
+              size="small"
+              variant="secondary"
             >
               Add Language
-            </button>
+            </Button>
           </div>
 
           <div className="space-y-3">
@@ -94,28 +93,22 @@ export default function TranslatorChainPage() {
                 <span className="text-sm font-medium text-gray-500 w-20">
                   Step {index + 1}:
                 </span>
-                <select
-                  value={lang}
-                  onChange={(e) => handleLanguageChange(index, e.target.value)}
-                  className="flex-1 p-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                >
-                  {availableLanguages.map((availableLang) => (
-                    <option key={availableLang} value={availableLang}>
-                      {availableLang}
-                    </option>
-                  ))}
-                </select>
-                <button
+                <div className="flex-1">
+                  <Select
+                    value={lang}
+                    onChange={(value) => handleLanguageChange(index, value)}
+                    options={availableLanguages}
+                    placeholder="Select a language"
+                  />
+                </div>
+                <Button
                   onClick={() => handleRemoveLanguage(index)}
                   disabled={languages.length <= 2}
-                  className={`px-3 py-2 text-sm rounded-lg font-medium transition-colors ${
-                    languages.length <= 2
-                      ? 'bg-gray-300 text-gray-500 cursor-not-allowed'
-                      : 'bg-red-600 text-white hover:bg-red-700'
-                  }`}
+                  size="small"
+                  variant="danger"
                 >
                   Remove
-                </button>
+                </Button>
               </div>
             ))}
           </div>
@@ -124,30 +117,25 @@ export default function TranslatorChainPage() {
           </p>
         </div>
 
-        <button
+        <Button
           onClick={handleTranslate}
-          disabled={!text || loading}
-          className={`px-6 py-3 rounded-lg font-medium text-white transition-colors ${
-            loading || !text
-              ? 'bg-gray-400 cursor-not-allowed'
-              : 'bg-blue-600 hover:bg-blue-700'
-          }`}
+          disabled={!text}
+          loading={loading}
+          size="small"
         >
-          {loading ? 'Translating...' : 'Translate Chain'}
-        </button>
+          Translate Chain
+        </Button>
 
         {result && (
           <div className="mt-8 p-6 bg-gray-50 rounded-lg">
-            <h2 className="text-xl font-semibold mb-4">Translation Chain Result</h2>
             <div className="space-y-4">
-                <div className="mt-2 space-y-2">
+                <div className="mt-2 space-y-4">
                   {result.results && Object.keys(result.results).map((key, index) => (
                     <div key={index} className="pl-4 border-l-2 border-blue-300">
-                      <p className="text-sm text-gray-600">
-                        Step {index + 1}
+                      <p className="text-xs text-gray-600">
+                        Step {index + 1} - {key}
                       </p>
-                      <p className="text-gray-900">{result.results[key]}</p>
-                      <p className="text-gray-900">{key}</p>
+                      <p className="text-gray-900 mt-1">{result.results[key]}</p>
                     </div>
                   ))}
                 </div>
