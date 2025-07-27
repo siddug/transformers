@@ -11,6 +11,8 @@ This project includes a complete Docker setup with FastAPI, PostgreSQL, Qdrant, 
 - **Worker**: RQ worker for background jobs
 - **MinIO**: S3-compatible object storage (port 9000, console on 9001)
 - **Next.js**: Web UI (port 3000)
+- **RQ Dashboard**: Redis Queue monitoring (port 9181)
+- **pgAdmin**: PostgreSQL web interface (port 5050)
 
 ## Quick Start
 
@@ -30,6 +32,9 @@ docker-compose up --build
 - API Docs: http://localhost:8000/docs
 - Health Check: http://localhost:8000/health
 - MinIO Console: http://localhost:9001 (login: minioadmin/minioadmin)
+- Qdrant Dashboard: http://localhost:6333/dashboard
+- pgAdmin: http://localhost:5050 (login: admin@chain-reaction.com/admin)
+- RQ Dashboard: http://localhost:9181
 
 ## API Endpoints
 
@@ -100,6 +105,24 @@ To run only specific services:
 ```bash
 docker-compose up postgres redis qdrant
 ```
+
+## Database Visualization
+
+### pgAdmin (PostgreSQL)
+1. Access pgAdmin at http://localhost:5050
+2. Login with: admin@chain-reaction.com / admin
+3. Add a new server:
+   - Name: chain-reaction
+   - Host: postgres (when running in Docker)
+   - Port: 5432
+   - Database: chain_reaction
+   - Username: postgres
+   - Password: postgres
+
+### Qdrant Dashboard
+- Access at http://localhost:6333/dashboard
+- View collections, vectors, and run searches
+- No authentication required
 
 ## Stopping Services
 

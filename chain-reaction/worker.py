@@ -1,10 +1,9 @@
 #!/usr/bin/env python
 import os
 import sys
-from rq import Worker, Queue, Connection
+from rq import Worker, Queue
 from database import redis_conn
 
 if __name__ == '__main__':
-    with Connection(redis_conn):
-        worker = Worker(list(map(Queue, ['default'])))
-        worker.work()
+    worker = Worker(['default'], connection=redis_conn)
+    worker.work()

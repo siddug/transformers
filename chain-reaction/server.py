@@ -7,7 +7,7 @@ from apps.translator import Translator
 from apps.grounded_gpt import Search, Draft, Main
 from main import Chain
 from pydantic import BaseModel
-from database import get_db, qdrant_client, task_queue
+from database import get_db, qdrant_client, task_queue, create_tables, create_qdrant_chunks_collection
 from tasks import long_running_task, process_translation_batch, process_vector_embedding
 from s3_utils import upload_file, download_file, delete_file, list_files, get_file_info
 from fastapi import UploadFile, File, HTTPException
@@ -26,6 +26,19 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+@app.on_event("startup")
+async def startup_event():
+    """Initialize database tables on startup"""
+    try:
+        create_tables()
+        print("Database tables initialized successfully")
+        create_qdrant_chunks_collection()
+        print("Qdrant chunks collection created successfully")
+    except Exception as e:
+        print(f"Error initializing database tables: {e}")
+        # You might want to exit or handle this differently in production
+        raise
 
 @app.get("/")
 def read_root():

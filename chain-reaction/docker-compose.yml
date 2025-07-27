@@ -101,8 +101,43 @@ services:
       - /app/node_modules
     command: npm run dev
 
+  rq-dashboard:
+    image: eoranged/rq-dashboard
+    container_name: chain-reaction-rq-dashboard
+    ports:
+      - "9181:9181"
+    environment:
+      - RQ_DASHBOARD_REDIS_URL=redis://redis:6379
+    depends_on:
+      - redis
+
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: chain-reaction-pgadmin
+    environment:
+      - PGADMIN_DEFAULT_EMAIL=admin@chain-reaction.com
+      - PGADMIN_DEFAULT_PASSWORD=admin
+      - PGADMIN_CONFIG_SERVER_MODE=False
+      - PGADMIN_CONFIG_MASTER_PASSWORD_REQUIRED=False
+    ports:
+      - "5050:80"
+    depends_on:
+      - postgres
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+      - ./pgadmin-servers.json:/pgadmin4/servers.json:ro
+    entrypoint: >
+      /bin/sh -c "
+      mkdir -p /var/lib/pgadmin/storage/admin_chain-reaction.com;
+      echo 'postgres:5432:*:postgres:postgres' > /var/lib/pgadmin/storage/admin_chain-reaction.com/pgpassfile;
+      chmod 600 /var/lib/pgadmin/storage/admin_chain-reaction.com/pgpassfile;
+      chown -R 5050:5050 /var/lib/pgadmin/storage;
+      /entrypoint.sh
+      "
+
 volumes:
   postgres_data:
   redis_data:
   qdrant_data:
   minio_data:
+  pgadmin_data:
