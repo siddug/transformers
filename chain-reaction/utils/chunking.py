@@ -12,17 +12,27 @@ import tiktoken
 import nltk
 nltk.download('punkt_tab')
 
-def _convert_to_tokens(text: str, model: str):
+def _convert_to_tokens(text: str, model_or_encoding: str):
     """
     Convert the text to tokens using the tiktoken library
     """
-    return tiktoken.encoding_for_model(model).encode(text)
+    # Check if it's an encoding name (like o200k_base, cl100k_base) or a model name
+    if model_or_encoding in ["o200k_base", "cl100k_base", "p50k_base", "r50k_base"]:
+        encoding = tiktoken.get_encoding(model_or_encoding)
+    else:
+        encoding = tiktoken.encoding_for_model(model_or_encoding)
+    return encoding.encode(text)
 
-def _convert_to_text(tokens: list[int], model: str):
+def _convert_to_text(tokens: list[int], model_or_encoding: str):
     """
     Convert the tokens to text using the tiktoken library
     """
-    return tiktoken.encoding_for_model(model).decode(tokens)
+    # Check if it's an encoding name (like o200k_base, cl100k_base) or a model name
+    if model_or_encoding in ["o200k_base", "cl100k_base", "p50k_base", "r50k_base"]:
+        encoding = tiktoken.get_encoding(model_or_encoding)
+    else:
+        encoding = tiktoken.encoding_for_model(model_or_encoding)
+    return encoding.decode(tokens)
 
 def naive_chunking(text: str, max_chunk_size: int, model: str):
     """

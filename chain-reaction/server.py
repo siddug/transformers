@@ -14,6 +14,7 @@ from fastapi import UploadFile, File, HTTPException
 from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from io import BytesIO
+from apps.github_rag import ingest_repo, get_repo_files, get_file_details
 
 # This is a qucik api server to test the chain reaction apps
 app = FastAPI()
@@ -196,3 +197,31 @@ async def get_file_info_endpoint(file_name: str, bucket: str = "chain-reaction")
         return info
     except Exception as e:
         raise HTTPException(status_code=404, detail=str(e))
+
+# App 4: Github RAG
+class GithubRAGRequest(BaseModel):
+    repo_url: str
+
+@app.post("/chain/samples/github-rag")
+def run_github_rag(request: GithubRAGRequest):
+    repo_id = ingest_repo(request.repo_url)
+    return {"message": "Repo ingested successfully", "repo_id": repo_id, "success": "ok"}
+
+class GithubRAGFilesRequest(BaseModel):
+    repo_id: str
+    page: int
+    page_size: int
+
+# paginated fetch of repo files
+@app.post("/chain/samples/github-rag/files")
+def run_github_rag_files(request: GithubRAGFilesRequest):
+    print(f"Running github rag files for repo {request.repo_id} with page {request.page} and page size {request.page_size}")
+    files, total_num_files, page, page_size = get_repo_files(request.repo_id, request.page, request.page_size)
+    return {"files": files, "total_num_files": total_num_files, "page": page, "page_size": page_size, "success": "ok"}
+
+# get file details
+@app.get("/chain/samples/github-rag/files/{file_id}")
+def run_github_rag_file_details(file_id: str):
+    file = get_file_details(file_id)
+    return {"file": file, "success": "ok"}
+

@@ -47,7 +47,7 @@ Next steps:
 2. What are the generic metrics that we can use to evaluate the system? So I can benchmark RAG against agents?
     - G-eval on the system (custom criteria + eval steps + threshold and using llms to score); Tonality, Safety, Coherence, Answer correctness
     - DAG on the system (graph based evaluation of the system)
-3. How do we make the UI interaction better? Instead of polling system? - WebSockets is a good option.
+3. How do we make the UI interaction better? Instead of polling system? - WebSockets is a good option?
 4. Instead of making it a fixed RAG, can we make it an agent with more tools?
 
 
@@ -70,6 +70,7 @@ PG DB schema:
 
 Qdrant DB schema:
 - Chunk
+    - id (auto gen uuid)
     - repo_id 
     - file_id
     - file_path
@@ -77,5 +78,104 @@ Qdrant DB schema:
     - vector_embeddings
     - added_at
 """
+
+from database import repo_table, file_table, engine, github_queue
+from sqlalchemy.orm import Session
+from sqlalchemy import select, func, insert
+from tasks import generate_file_jobs_for_repo
+
+
+# Ingestion and Repo API fn's that will be used by server.py
+
+"""
+1. Ingest a repo
+Take repo url as input -> break down into owner, name, branch with defaults if not provided. Then check if there's an existing repo in the db. If not, create a new repo.
+Start a new job to convert the repo into chunks if the repo is not already in the db. 
+Return the repo id.
+
+2. Given a repo id, return paginated list of files and folders in the repo.
+Return the list of files and folders. Totals + Page.
+
+3. Given a file id, return the file details.
+Return the file details.
+"""
+
+def ingest_repo(repo_url: str):
+    if "github.com" not in repo_url:
+        # check if there's a / in the middle of the url
+        if "/" in repo_url:
+            # split the url into owner, name, branch
+            owner, name = repo_url.split("/")
+            branch = "main"
+        else:
+            raise ValueError("Invalid repo url")
+    else:
+        repo_url = repo_url.split("github.com/")[-1]
+        owner, name = repo_url.split("/")
+        branch = "main"
+
+    # remove any trailing or starting slashes from the owner and name
+    owner = owner.strip("/")
+    name = name.strip("/")
+
+    # check if there's an existing repo in the db
+    with Session(engine) as session:
+        stmt = select(repo_table.c.id).where(repo_table.c.owner == owner, repo_table.c.name == name, repo_table.c.branch == branch)
+        repo_id = session.execute(stmt).scalar_one_or_none()
+        if repo_id:
+            # check how many files are in the repo. If it's 0, then let's schedule a new job to generate the files
+            stmt = select(func.count(file_table.c.id)).where(file_table.c.repo_id == repo_id)
+            num_files = session.execute(stmt).scalar_one()
+            if num_files == 0:
+                job_id = f"repo-init-{repo_id}"
+                existing_job = github_queue.fetch_job(job_id)
+                if not existing_job:
+                    github_queue.enqueue(generate_file_jobs_for_repo, repo_id, job_id=job_id)
+            return repo_id
+        else:
+            # create a new repo
+            stmt = insert(repo_table).values(owner=owner, name=name, branch=branch).returning(repo_table.c.id)
+            result = session.execute(stmt)
+            repo_id = result.scalar_one()
+            session.commit()
+
+            # start a new job to convert the repo into chunks
+            # use jobId as repo-init-{repo_id}. Queue a job if a job with this id is not already running
+            job_id = f"repo-init-{repo_id}"
+            existing_job = github_queue.fetch_job(job_id)
+            if not existing_job:
+                github_queue.enqueue(generate_file_jobs_for_repo, repo_id, job_id=job_id)
+
+            return repo_id
+
+def get_repo_files(repo_id: str, page: int = 1, page_size: int = 20):
+    with Session(engine) as session:
+        stmt = select(file_table).where(file_table.c.repo_id == repo_id).order_by(file_table.c.added_at.desc()).offset((page - 1) * page_size).limit(page_size)
+        # get everything except raw_content
+        files = session.execute(stmt).fetchall()
+        files = [{"id": file.id, "path": file.path, "summary_status": file.summary_status, "chunks_status": file.chunks_status, "added_at": file.added_at} for file in files]
+        total_num_files = session.execute(select(func.count(file_table.c.id))).scalar_one()
+        # page size must be max 100
+        if page_size > 100:
+            page_size = 100
+        return files, total_num_files, page, page_size
+    
+def get_file_details(file_id: str):
+    with Session(engine) as session:
+        stmt = select(file_table).where(file_table.c.id == file_id)
+        file = session.execute(stmt).fetchone()
+        if file:
+            return {
+                "id": str(file.id),
+                "repo_id": str(file.repo_id),
+                "path": file.path,
+                "raw_content": file.raw_content,
+                "summary": file.summary,
+                "summary_status": file.summary_status,
+                "chunks_status": file.chunks_status,
+                "added_at": file.added_at.isoformat() if file.added_at else None
+            }
+        return None
+
 
 

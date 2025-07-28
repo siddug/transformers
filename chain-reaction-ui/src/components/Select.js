@@ -2,7 +2,14 @@
 
 import { useState, useRef, useEffect } from 'react';
 
-export default function Select({ value, onChange, options, placeholder = "Select an option", className = "" }) {
+export default function Select({ 
+  value, 
+  onChange, 
+  options, 
+  placeholder = "Select an option", 
+  size = "medium", // small, medium
+  className = "" 
+}) {
   const [isOpen, setIsOpen] = useState(false);
   const selectRef = useRef(null);
 
@@ -27,17 +34,27 @@ export default function Select({ value, onChange, options, placeholder = "Select
     ? (typeof selectedOption === 'object' ? selectedOption.label : selectedOption)
     : placeholder;
 
+  const sizeClasses = {
+    small: "px-2 py-1 text-sm",
+    medium: "px-3 py-1.25"
+  };
+
+  const iconSizes = {
+    small: "w-4 h-4",
+    medium: "w-5 h-5"
+  };
+
   return (
     <div ref={selectRef} className={`relative ${className}`}>
       <button
         type="button"
         onClick={() => setIsOpen(!isOpen)}
-        className="w-full px-3 cursor-pointer py-1.25 text-left bg-white border border-gray-300 rounded hover:border-gray-400 focus:outline-none transition-colors"
+        className={`w-full ${sizeClasses[size]} text-left bg-white border border-gray-300 rounded hover:border-gray-400 focus:outline-none transition-colors cursor-pointer`}
       >
         <span className="block truncate">{displayValue}</span>
-        <span className="absolute inset-y-0 right-0 flex items-center pr-4 pointer-events-none">
+        <span className={`absolute inset-y-0 right-0 flex items-center ${size === 'small' ? 'pr-2' : 'pr-4'} pointer-events-none`}>
           <svg
-            className={`w-5 h-5 text-gray-400 transition-transform ${isOpen ? 'rotate-180' : ''}`}
+            className={`${iconSizes[size]} text-gray-400 transition-transform ${isOpen ? 'rotate-180' : ''}`}
             fill="none"
             stroke="currentColor"
             viewBox="0 0 24 24"
@@ -60,10 +77,10 @@ export default function Select({ value, onChange, options, placeholder = "Select
                   <button
                     type="button"
                     onClick={() => {
-                      onChange(optionValue);
+                      onChange({ value: optionValue, label: optionLabel });
                       setIsOpen(false);
                     }}
-                    className={`w-full px-4 py-2 text-left hover:bg-gray-100 transition-colors ${
+                    className={`w-full ${size === 'small' ? 'px-3 py-1.5 text-sm' : 'px-4 py-2'} text-left hover:bg-gray-100 transition-colors ${
                       isSelected ? 'bg-gray-50 font-medium' : ''
                     }`}
                   >

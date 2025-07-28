@@ -26,6 +26,7 @@ qdrant_client = QdrantClient(host=QDRANT_HOST, port=QDRANT_PORT)
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
 redis_conn = redis.from_url(REDIS_URL)
 task_queue = Queue(connection=redis_conn)
+github_queue = Queue('github', connection=redis_conn)
 
 # DB table setup. On init, create the tables if they don't exist
 """
@@ -91,6 +92,42 @@ def create_qdrant_chunks_collection():
     else:
         print("Qdrant chunks collection already exists")
     return
+
+"""
+- Chunk (Qdrant)
+    - id (auto gen uuid)
+    - repo_id 
+    - file_id
+    - file_path
+    - raw_chunk_text
+    - vector_embeddings
+    - added_at
+"""
+def insert_chunks(repo_id: str, file_id: str, file_path: str, chunks: list[(str, list[float])]):
+    # upsert chunk into qdrant
+    from qdrant_client.models import PointStruct
+    
+    points = []
+    for chunk_text, chunk_embedding in chunks:
+        point = PointStruct(
+            id=str(uuid4()),  # Qdrant expects string ID
+            vector=chunk_embedding,  # The embedding vector
+            payload={  # All other data goes in payload
+                "repo_id": str(repo_id),
+                "file_id": str(file_id),
+                "file_path": file_path,
+                "raw_chunk_text": chunk_text,
+                "added_at": datetime.utcnow().isoformat()
+            }
+        )
+        points.append(point)
+    
+    # Batch upsert all points at once
+    if points:
+        qdrant_client.upsert(
+            collection_name="chunks",
+            points=points
+        )
 
 # Dependency for FastAPI
 def get_db():

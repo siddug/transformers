@@ -13,6 +13,11 @@ const menuItems = [
     name: 'Translator Chain',
     path: '/translator-chain',
     description: 'Chain multiple translations'
+  },
+  {
+    name: 'Github RAG',
+    path: '/github-repo-rag',
+    description: 'Github RAG'
   }
 ];
 
