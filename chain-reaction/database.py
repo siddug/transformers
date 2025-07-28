@@ -2,7 +2,7 @@ import os
 from uuid import uuid4
 from datetime import datetime
 from sqlalchemy import create_engine, Table, Column, String, DateTime, ForeignKey, text, Integer, Float
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 from qdrant_client import QdrantClient
@@ -27,6 +27,7 @@ REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
 redis_conn = redis.from_url(REDIS_URL)
 task_queue = Queue(connection=redis_conn)
 github_queue = Queue('github', connection=redis_conn)
+rag_queue = Queue('rag', connection=redis_conn)
 
 # DB table setup. On init, create the tables if they don't exist
 """
@@ -44,6 +45,11 @@ github_queue = Queue('github', connection=redis_conn)
     - summary
     - summary_status (processing, processed, failed)
     - chunks_status (processing, processed, failed)
+    - added_at
+- RAG_Request
+    - id (auto gen uuid)
+    - request_details (jsonb)
+    - response_details (jsonb)
     - added_at
 """
 repo_table = Table("repos", metadata,
@@ -63,6 +69,12 @@ file_table = Table("files", metadata,
     Column("chunks_status", String, nullable=False, default="pending"),
     Column("added_at", DateTime, nullable=False, default=datetime.utcnow),
 )
+rag_requests_table = Table("rag_requests", metadata,
+    Column("id", UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")),
+    Column("request_details", JSONB, nullable=True),
+    Column("response_details", JSONB, nullable=True),
+    Column("added_at", DateTime, nullable=False, default=datetime.utcnow),
+)
 
 def create_tables():
     """Create the tables if they don't exist"""
@@ -78,7 +90,6 @@ def create_tables():
 def drop_tables():
     # Drop the tables if they exist
     metadata.drop_all(bind=engine)
-
 
 # create qdrant chunks collection if it doesn't exist. put this in a function and run it on startup
 def create_qdrant_chunks_collection():

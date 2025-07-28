@@ -19,13 +19,12 @@ Implementation:
 2. RAG API - 
     - Using chain-reaction framework, create a RAG agent that takes in User's query
     - Blocks: 
-        - Action block - takes in user's query + current context and decides what to do next
-        - LLM block - takes in user's query + current context and generates a response
-        - Vector search block - takes in a query and searches the vector database for relevant chunks
+        - Embedding gen block - takes in a text and generates an embedding
+        - Vector search block - takes in a embedding and searches the vector database for relevant chunks
+        - LLM block - takes in user's query + chunks context and generates a response
         - Links:
-            - Action - "search" >> Vector search block
-            - Action - "answer" >> LLM block
-            - Vector search block >> Action
+            - Embedding gen block >> Vector search block
+            - Vector search block >> LLM block
             - LLM block >> END
     - Expose the flow as an API
     - Since this might take time, make blocks and flow's async
@@ -79,10 +78,18 @@ Qdrant DB schema:
     - added_at
 """
 
-from database import repo_table, file_table, engine, github_queue
+import uuid
+from database import repo_table, file_table, engine, github_queue, rag_requests_table, rag_queue
 from sqlalchemy.orm import Session
 from sqlalchemy import select, func, insert
-from tasks import generate_file_jobs_for_repo
+from main import Block, Chain
+from utils.llm import Mistral, Gemini
+import os
+from dotenv import load_dotenv
+import time
+from qdrant_client import QdrantClient
+
+load_dotenv()
 
 
 # Ingestion and Repo API fn's that will be used by server.py
@@ -118,6 +125,8 @@ def ingest_repo(repo_url: str):
     owner = owner.strip("/")
     name = name.strip("/")
 
+    job_creation_info = None
+
     # check if there's an existing repo in the db
     with Session(engine) as session:
         stmt = select(repo_table.c.id).where(repo_table.c.owner == owner, repo_table.c.name == name, repo_table.c.branch == branch)
@@ -130,8 +139,11 @@ def ingest_repo(repo_url: str):
                 job_id = f"repo-init-{repo_id}"
                 existing_job = github_queue.fetch_job(job_id)
                 if not existing_job:
-                    github_queue.enqueue(generate_file_jobs_for_repo, repo_id, job_id=job_id)
-            return repo_id
+                    job_creation_info = {
+                        "job_id": job_id,
+                        "repo_id": repo_id,
+                    }
+            return repo_id, job_creation_info
         else:
             # create a new repo
             stmt = insert(repo_table).values(owner=owner, name=name, branch=branch).returning(repo_table.c.id)
@@ -144,9 +156,12 @@ def ingest_repo(repo_url: str):
             job_id = f"repo-init-{repo_id}"
             existing_job = github_queue.fetch_job(job_id)
             if not existing_job:
-                github_queue.enqueue(generate_file_jobs_for_repo, repo_id, job_id=job_id)
+                job_creation_info = {
+                    "job_id": job_id,
+                    "repo_id": repo_id,
+                }
 
-            return repo_id
+            return repo_id, job_creation_info
 
 def get_repo_files(repo_id: str, page: int = 1, page_size: int = 20):
     with Session(engine) as session:
@@ -177,5 +192,171 @@ def get_file_details(file_id: str):
             }
         return None
 
+def create_rag_request(repo_id: uuid.UUID, messages: list[dict]):
+    # A rag request should have the following details:
+    # repo_id (UUID)
+    # messages (list of dicts) array (the last message is the user's query)
+    # create a rag_request in the db
+    # instantiate a new job in the rag_queue
+    # return the request_id
+    with Session(engine) as session:
+        result = session.execute(
+            insert(rag_requests_table)
+            .values(request_details={"repo_id": repo_id, "messages": messages, "status": "idle"})
+            .returning(rag_requests_table.c.id)
+        )
+        request_id = result.scalar_one()
+        session.commit()
 
+    job_creation_info = {
+        "job_id": f"rag-request-{request_id}",
+        "request_id": request_id,
+    }
 
+    return request_id, job_creation_info
+
+def get_rag_request_status(request_id: str):
+    with Session(engine) as session:
+        stmt = select(rag_requests_table).where(rag_requests_table.c.id == request_id)
+        request = session.execute(stmt).fetchone()
+        if request:
+            return {
+                "id": str(request.id),
+                "messages": request.request_details["messages"],
+                "added_at": request.added_at.isoformat() if request.added_at else None,
+                "response_details": request.response_details,
+                "status": request.response_details["status"] if request.response_details else "idle"
+            }
+        return None
+
+# RAG Action Block. Takes in user's query + current context and decides what to do next
+class EmbeddingGenBlock(Block):
+    def __init__(self, logging: bool = False):
+        super().__init__(name="EmbeddingGenBlock", description="EmbeddingGenBlock is a block that generates an embedding for a given text.", retries=3, retry_delay=1, logging=logging)
+        self.embeddings_model = Mistral(api_key=os.getenv("MISTRAL_API_KEY"), model="codestral-embed")
+        self.delay = 1
+
+    def prepare(self, context: dict):
+        return context["text"]
+    
+    def execute(self, context, prepare_response):
+        # increase delay with exponential backoff
+        time.sleep(self.delay)
+        self.delay *= 2
+        return ["success", self.embeddings_model.generate_embeddings(prepare_response, "codestral-embed")]
+    
+    def execute_fallback(self, context, prepare_response, error):
+        return ["error", str(error)]
+    
+    def post_process(self, context, prepare_response, execute_response):
+        context["embedding"] = execute_response[1]
+        context["status"] = execute_response[0]
+        return "default"
+
+class VectorSearchBlock(Block):
+    def __init__(self, logging: bool = False):
+        super().__init__(name="VectorSearchBlock", description="VectorSearchBlock is a block that searches the vector database for a given embedding.", retries=3, retry_delay=1, logging=logging)
+        self.qdrant = QdrantClient(host=os.getenv("QDRANT_HOST"), port=int(os.getenv("QDRANT_PORT")))
+
+    def prepare(self, context: dict):
+        return context["embedding"]
+    
+    def execute(self, context, prepare_response):
+        # if the embedding is not in the context, then raise an error
+        if "embedding" not in context:
+            return ["error", "Embedding not found in context"]
+        
+        # search the vector database for the embedding
+        # There should be repo level filter here
+        results = self.qdrant.search(collection_name="chunks", query_vector=prepare_response, limit=10, with_payload=True)
+
+        # from qdrant extract the chunk raw_chunk_text and file_path
+        chunks = [{"raw_chunk_text": result.payload["raw_chunk_text"], "file_path": result.payload["file_path"]} for result in results]
+        return ["success", chunks]
+    
+    def execute_fallback(self, context, prepare_response, error):
+        return ["error", str(error)]
+    
+    def post_process(self, context, prepare_response, execute_response):
+        if execute_response[0] == "success":
+            context["chunks"] = execute_response[1]
+            context["status"] = "success"
+        else:
+            context["status"] = "error"
+            context["error"] = execute_response[1]
+        return "default"
+
+    
+class LLMBlock(Block):
+    def __init__(self, logging: bool = False):
+        super().__init__(name="LLMBlock", description="LLMBlock is a block that generates a response using a given prompt and context.", retries=3, retry_delay=1, logging=logging)
+        self.mistral = Mistral(api_key=os.getenv("MISTRAL_API_KEY"), model="mistral-large-latest")
+        self.gemini = Gemini(api_key=os.getenv("GEMINI_API_KEY"), model="gemini-2.0-flash")
+        self.llm_council = 0
+
+    def prepare(self, context: dict):
+        return [[], context["text"]] if "chunks" not in context else [context["chunks"], context["text"]]
+    
+    def execute(self, context, prepare_response):
+        self.llm_council += 1
+        self.llm_council = self.llm_council % 3
+
+        chunks, query = prepare_response
+        # if the chunks are empty, then raise an error
+        if not chunks or len(chunks) == 0:
+            return ["error", "No related information to answer the question. Please try again with a different question."]
+        
+        # if the query is empty, then raise an error
+        if not query:
+            return ["error", "Please provide a question to answer."]
+
+        # merge the chunks into a single string
+        chunks_str = "\n\n".join([chunk["raw_chunk_text"] for chunk in chunks])
+
+        prompt = f"""
+        USECASE:
+        ----
+        You are a helpful assistant that answers questions about the codebase.
+
+        USER'S QUERY:
+        ----
+        {query}
+
+        RELEVANT INFORMATION FROM THE CODEBASE TO ANSWER THE QUESTION:
+        ----
+
+        {chunks_str}
+
+        RESPONSE:
+        ----
+        Please answer the user's query based on the relevant information from the codebase and codebase alone. Do not hallucinate.
+        """
+
+        # generate a response using the chunks
+        llm = self.gemini if self.llm_council == 0 else self.mistral
+
+        response = llm.generate_text([{"role": "user", "content": prompt, "type": "text"}])
+
+        return ["success", response]
+    
+    def execute_fallback(self, context, prepare_response, error):
+        return ["error", str(error)]
+    
+    def post_process(self, context, prepare_response, execute_response):
+        context["response"] = execute_response[1]
+        context["status"] = execute_response[0]
+        return "default"
+
+def work_on_rag_request(messages: list[dict]):
+    # create a new flow run
+    embedding = EmbeddingGenBlock()
+    vector_search = VectorSearchBlock()
+    llm = LLMBlock()
+    embedding >> vector_search
+    vector_search >> llm
+
+    # create a new flow run
+    flow = Chain(name="RAGFlow", starting_block=embedding)
+    context = {"text": messages[-1]["content"]}
+    flow.run(context)
+    return context

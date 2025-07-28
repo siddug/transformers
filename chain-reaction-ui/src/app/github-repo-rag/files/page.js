@@ -8,11 +8,20 @@ import Button from "@/components/Button";
 export default function GithubRepoRAGFilesPage() {
   const searchParams = useSearchParams();
   const repoId = searchParams.get('repo_id');
+  const [activeTab, setActiveTab] = useState('files');
+  
+  // Files tab state
   const [loading, setLoading] = useState(false);
   const [files, setFiles] = useState([]);
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(100);
   const [totalNumFiles, setTotalNumFiles] = useState(0);
+  
+  // RAG tab state
+  const [question, setQuestion] = useState('');
+  const [messages, setMessages] = useState([]);
+  const [ragLoading, setRagLoading] = useState(false);
+  const [currentRequestId, setCurrentRequestId] = useState(null);
 
   useEffect(() => {
     const fetchFiles = async () => {
@@ -39,14 +48,127 @@ export default function GithubRepoRAGFilesPage() {
     fetchFiles();
   }, [repoId, page, pageSize]);
 
+  const handleAskQuestion = async () => {
+    if (!question.trim()) return;
+    
+    setRagLoading(true);
+    const newMessage = { role: 'user', content: question };
+    const updatedMessages = [...messages, newMessage];
+    setMessages(updatedMessages);
+    
+    try {
+      // Create RAG request
+      const response = await fetch(
+        'http://localhost:8000/chain/samples/github-rag/request/create',
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            repo_id: repoId,
+            messages: updatedMessages,
+          }),
+        }
+      );
+      const data = await response.json();
+      
+      if (data.success === 'ok') {
+        setCurrentRequestId(data.request_id);
+        setQuestion('');
+        // Start polling for response
+        pollForResponse(data.request_id);
+      }
+    } catch (error) {
+      console.error('Error creating RAG request:', error);
+      setRagLoading(false);
+    }
+  };
+
+  const pollForResponse = async (requestId) => {
+    const pollInterval = setInterval(async () => {
+      try {
+        const response = await fetch(
+          'http://localhost:8000/chain/samples/github-rag/request/status',
+          {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+              request_id: requestId,
+            }),
+          }
+        );
+        const data = await response.json();
+        
+        if (data.success === 'ok' && data.status) {
+          // Check if the response is ready (status is 'success' and response_details exists)
+          if (data.status.status === 'success' && data.status.response_details) {
+            clearInterval(pollInterval);
+            setMessages(prev => [...prev, {
+              role: 'assistant',
+              content: data.status.response_details.response
+            }]);
+            setRagLoading(false);
+            setCurrentRequestId(null);
+          }
+        }
+      } catch (error) {
+        console.error('Error polling for response:', error);
+        clearInterval(pollInterval);
+        setRagLoading(false);
+      }
+    }, 2000); // Poll every 2 seconds
+    
+    // Stop polling after 2 minutes
+    setTimeout(() => {
+      clearInterval(pollInterval);
+      if (ragLoading) {
+        setRagLoading(false);
+        setMessages(prev => [...prev, {
+          role: 'assistant',
+          content: 'Request timed out. Please try again.'
+        }]);
+      }
+    }, 120000);
+  };
+
   return (
     <div className="max-w-7xl">
-      <h1 className="text-3xl font-bold mb-1">Github RAG Files</h1>
-      <p className="text-gray-600 mb-8">View the files in the repo</p>
+      <h1 className="text-3xl font-bold mb-1">Github RAG</h1>
+      <p className="text-gray-600 mb-8">Explore repository files and ask questions</p>
 
-      <div className="space-y-6">
-        <div>
-          <h2 className="text-xl font-bold mb-4">Files</h2>
+      {/* Tabs */}
+      <div className="border-b border-gray-200 mb-6">
+        <nav className="-mb-px flex space-x-8">
+          <button
+            onClick={() => setActiveTab('files')}
+            className={`py-2 px-1 border-b-2 font-medium text-sm ${
+              activeTab === 'files'
+                ? 'border-gray-900 text-gray-900'
+                : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+            }`}
+          >
+            Files
+          </button>
+          <button
+            onClick={() => setActiveTab('rag')}
+            className={`py-2 px-1 border-b-2 font-medium text-sm ${
+              activeTab === 'rag'
+                ? 'border-gray-900 text-gray-900'
+                : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+            }`}
+          >
+            RAG
+          </button>
+        </nav>
+      </div>
+
+      {activeTab === 'files' ? (
+        <div className="space-y-6">
+          <div>
+            <h2 className="text-xl font-bold mb-4">Files</h2>
           {loading ? (
             <div className="flex justify-center py-8">
               <div className="text-gray-500">Loading files...</div>
@@ -155,6 +277,65 @@ export default function GithubRepoRAGFilesPage() {
           </div>
         </div>
       </div>
+      ) : (
+        <div className="space-y-6">
+          <div>
+            <h2 className="text-xl font-bold mb-4">Ask Questions</h2>
+            
+            {/* Question Input */}
+            <div className="flex gap-2 mb-6">
+              <input
+                type="text"
+                value={question}
+                onChange={(e) => setQuestion(e.target.value)}
+                onKeyPress={(e) => e.key === 'Enter' && handleAskQuestion()}
+                placeholder="Ask a question about this repository..."
+                className="flex-1 p-2 border border-gray-300 rounded-md"
+                disabled={ragLoading}
+              />
+              <Button
+                size="small"
+                onClick={handleAskQuestion}
+                disabled={ragLoading || !question.trim()}
+              >
+                {ragLoading ? "Processing..." : "Ask"}
+              </Button>
+            </div>
+
+            {/* Messages Display */}
+            <div className="space-y-4">
+              {messages.length === 0 ? (
+                <div className="text-center py-8 text-gray-500">
+                  No messages yet. Ask a question to get started.
+                </div>
+              ) : (
+                messages.map((message, index) => (
+                  <div
+                    key={index}
+                    className={`p-4 rounded-lg ${
+                      message.role === 'user'
+                        ? 'bg-blue-50 ml-12'
+                        : 'bg-gray-50 mr-12'
+                    }`}
+                  >
+                    <div className="font-semibold mb-1">
+                      {message.role === 'user' ? 'You' : 'Assistant'}
+                    </div>
+                    <div className="whitespace-pre-wrap">{message.content}</div>
+                  </div>
+                ))
+              )}
+              
+              {/* Loading indicator */}
+              {ragLoading && (
+                <div className="flex items-center justify-center py-4">
+                  <div className="text-gray-500">Processing your question...</div>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

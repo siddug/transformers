@@ -1,12 +1,13 @@
 import time
-from database import task_queue, github_queue
+from database import task_queue, github_queue, rag_queue
 from rq.decorators import job
 from utils.github import get_repo_files, get_repo_file_raw
-from database import repo_table, file_table, engine, insert_chunks
+from database import repo_table, file_table, engine, insert_chunks, rag_requests_table
 from sqlalchemy.orm import Session
 from sqlalchemy import select, func, insert, update
 from utils.llm import Mistral, Gemini
 from utils.chunking import contextual_chunking
+from apps.github_rag import work_on_rag_request
 import os
 
 mistral = Mistral(api_key=os.getenv("MISTRAL_API_KEY"))
@@ -175,7 +176,31 @@ def generate_file_chunks(file_id: str):
         session.commit()
 
 
+@job("rag", connection=rag_queue.connection)
+def generate_rag_response(request_id: str):
+    # get the request from the db
+    with Session(engine) as session:
+        stmt = select(rag_requests_table).where(rag_requests_table.c.id == request_id)
+        request = session.execute(stmt).fetchone()
+        if not request:
+            raise ValueError(f"Request with id {request_id} not found")
+        
+        # get the request details
+        request_details = request.request_details
 
+        messages = request_details["messages"]
 
+        # for now, just write a response to the request as "Hello, world! This is a test response."
+        context = work_on_rag_request(messages)
+        
+        # Extract only JSON-serializable data from the response
+        response_details = {
+            "response": context.get("response", ""),
+            "status": context.get("status", "completed"),
+            "query": context.get("text", "")
+        }
 
-
+        # update the request with the response details
+        stmt = rag_requests_table.update().where(rag_requests_table.c.id == request_id).values(response_details=response_details)
+        session.execute(stmt)
+        session.commit()

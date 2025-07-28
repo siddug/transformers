@@ -6,7 +6,7 @@ export default function Button({
   disabled = false, 
   loading = false,
   variant = 'primary', // primary, secondary, danger
-  size = 'medium', // small, medium, large
+  size = 'small', // small, medium, large
   className = '',
   ...props 
 }) {

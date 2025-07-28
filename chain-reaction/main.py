@@ -9,11 +9,12 @@
 import time
 
 class Block:
-    def __init__(self, name: str = None, description: str = None, retries: int = 1, retry_delay: int = 0):
+    def __init__(self, name: str = None, description: str = None, retries: int = 1, retry_delay: int = 0, logging: bool = False):
         self.name = name
         self.description = description
         self.retries = retries
         self.retry_delay = retry_delay
+        self.logging = logging
         self.next_blocks = {}
 
     def prepare(self, context):
@@ -26,7 +27,12 @@ class Block:
         pass
     
     def run(self, context):
+        if self.logging:
+            print(f"Running block {self.name}")
         prepare_response = self.prepare(context)
+        if self.logging:
+            print(f"Prepare response: {prepare_response}")
+
 
         self.current_attempt = 0
         execute_response = None
@@ -38,6 +44,8 @@ class Block:
         while self.current_attempt < self.retries:
             try:
                 execute_response = retry_execute()
+                if self.logging:
+                    print(f"Execute response attempt {self.current_attempt}: {execute_response}")
                 execute_error = None
                 break
             except Exception as e:
@@ -47,9 +55,12 @@ class Block:
 
         if execute_error:
             execute_response = self.execute_fallback(context, prepare_response, execute_error)
-
+            if self.logging:
+                print(f"Execute fallback response: {execute_response}")
 
         post_process_response = self.post_process(context, prepare_response, execute_response)
+        if self.logging:
+            print(f"Post process response: {post_process_response}")
 
         return post_process_response
 

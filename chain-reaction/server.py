@@ -7,14 +7,14 @@ from apps.translator import Translator
 from apps.grounded_gpt import Search, Draft, Main
 from main import Chain
 from pydantic import BaseModel
-from database import get_db, qdrant_client, task_queue, create_tables, create_qdrant_chunks_collection
-from tasks import long_running_task, process_translation_batch, process_vector_embedding
+from database import get_db, qdrant_client, task_queue, create_tables, create_qdrant_chunks_collection, github_queue, rag_queue
+from tasks import long_running_task, process_translation_batch, process_vector_embedding, generate_file_jobs_for_repo, generate_rag_response
 from s3_utils import upload_file, download_file, delete_file, list_files, get_file_info
 from fastapi import UploadFile, File, HTTPException
 from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from io import BytesIO
-from apps.github_rag import ingest_repo, get_repo_files, get_file_details
+from apps.github_rag import ingest_repo, get_repo_files, get_file_details, create_rag_request, get_rag_request_status
 
 # This is a qucik api server to test the chain reaction apps
 app = FastAPI()
@@ -204,8 +204,10 @@ class GithubRAGRequest(BaseModel):
 
 @app.post("/chain/samples/github-rag")
 def run_github_rag(request: GithubRAGRequest):
-    repo_id = ingest_repo(request.repo_url)
-    return {"message": "Repo ingested successfully", "repo_id": repo_id, "success": "ok"}
+    repo_id, job_creation_info = ingest_repo(request.repo_url)
+    if job_creation_info:
+        github_queue.enqueue(generate_file_jobs_for_repo, repo_id, job_id=job_creation_info["job_id"])
+    return {"message": "Repo ingested successfully", "repo_id": repo_id, "job_creation_info": job_creation_info, "success": "ok"}
 
 class GithubRAGFilesRequest(BaseModel):
     repo_id: str
@@ -224,4 +226,24 @@ def run_github_rag_files(request: GithubRAGFilesRequest):
 def run_github_rag_file_details(file_id: str):
     file = get_file_details(file_id)
     return {"file": file, "success": "ok"}
+
+class GithubRAGRequest(BaseModel):
+    repo_id: str
+    messages: list[dict]
+
+@app.post("/chain/samples/github-rag/request/create")
+def run_github_rag_request(request: GithubRAGRequest):
+    request_id, job_creation_info = create_rag_request(request.repo_id, request.messages)
+    if job_creation_info:
+        rag_queue.enqueue(generate_rag_response, request_id, job_id=job_creation_info["job_id"])
+    return {"request_id": request_id, "job_creation_info": job_creation_info, "success": "ok"}
+
+class GithubRAGRequestStatusRequest(BaseModel):
+    request_id: str
+
+@app.post("/chain/samples/github-rag/request/status")
+def run_github_rag_request_status(request: GithubRAGRequestStatusRequest):
+    status = get_rag_request_status(request.request_id)
+    return {"status": status, "success": "ok"}
+
 
