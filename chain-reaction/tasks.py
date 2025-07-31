@@ -1,5 +1,5 @@
 import time
-from database import task_queue, github_queue, rag_queue
+from database import task_queue, github_queue, rag_queue, qa_queue, gold_qa_batch_table, gold_qa_table
 from rq.decorators import job
 from utils.github import get_repo_files, get_repo_file_raw
 from database import repo_table, file_table, engine, insert_chunks, rag_requests_table
@@ -166,7 +166,8 @@ def generate_file_chunks(file_id: str):
 
         # generate chunks
         chunk_texts = contextual_chunking(raw_content, 1000, "o200k_base", summary)
-        chunk_embeddings = [mistral.generate_embeddings(text, "codestral-embed") for text in chunk_texts]
+        # chunk_embeddings = [mistral.generate_embeddings(text, "codestral-embed") for text in chunk_texts]
+        chunk_embeddings = [gemini.generate_embeddings(text, "gemini-embedding-001") for text in chunk_texts]
 
         # insert chunks into the db
         insert_chunks(file.repo_id, file_id, file.path, list(zip(chunk_texts, chunk_embeddings)))
@@ -190,17 +191,92 @@ def generate_rag_response(request_id: str):
 
         messages = request_details["messages"]
 
+        repo_id = request_details["repo_id"]
+
         # for now, just write a response to the request as "Hello, world! This is a test response."
-        context = work_on_rag_request(messages)
+        context = work_on_rag_request(messages, repo_id)
         
         # Extract only JSON-serializable data from the response
         response_details = {
             "response": context.get("response", ""),
             "status": context.get("status", "completed"),
-            "query": context.get("text", "")
+            "query": context.get("text", ""),
+            "timing": context.get("timing", {}),
+            "chain_timing": context.get("chain_timing", {}),
+            "logs": context.get("logs", [])
         }
 
         # update the request with the response details
         stmt = rag_requests_table.update().where(rag_requests_table.c.id == request_id).values(response_details=response_details)
         session.execute(stmt)
+        session.commit()
+
+@job("qa", connection=qa_queue.connection)
+def generate_qa_batch(batch_id: str):
+    """Generate Q&A pairs for all processed files in a batch"""
+    with Session(engine) as session:
+        # Get batch details
+        stmt = select(gold_qa_batch_table).where(gold_qa_batch_table.c.id == batch_id)
+        batch = session.execute(stmt).fetchone()
+        if not batch:
+            raise ValueError(f"Batch with id {batch_id} not found")
+        
+        # Update batch status to running
+        stmt = update(gold_qa_batch_table).where(
+            gold_qa_batch_table.c.id == batch_id
+        ).values(status="running")
+        session.execute(stmt)
+        session.commit()
+        
+        # Get all files with processed chunks for this repo
+        stmt = select(file_table).where(
+            file_table.c.repo_id == batch.repo_id,
+            file_table.c.chunks_status == "processed"
+        )
+        files = session.execute(stmt).fetchall()
+        
+        # Queue sub-jobs for each file
+        for file in files:
+            job_id = f"qa-file-{batch_id}-{file.id}"
+            existing_job = qa_queue.fetch_job(job_id)
+            if not existing_job:
+                qa_queue.enqueue(
+                    generate_qa_for_file,
+                    batch_id=batch_id,
+                    file_id=file.id,
+                    job_id=job_id
+                )
+
+@job("qa", connection=qa_queue.connection)
+def generate_qa_for_file(batch_id: str, file_id: str):
+    """Generate Q&A pairs for a single file"""
+    from apps.qa_generation import work_on_qa_generation
+    
+    context = work_on_qa_generation(batch_id, file_id)
+    
+    # Check if all files are processed
+    with Session(engine) as session:
+        # Get batch details
+        stmt = select(gold_qa_batch_table).where(gold_qa_batch_table.c.id == batch_id)
+        batch = session.execute(stmt).fetchone()
+        
+        # Count processed files (files that have at least one Q&A pair)
+        stmt = select(func.count(func.distinct(gold_qa_table.c.file_id))).where(
+            gold_qa_table.c.batch_id == batch_id
+        )
+        processed_files = session.execute(stmt).scalar_one()
+        
+        # Update processed files count
+        stmt = update(gold_qa_batch_table).where(
+            gold_qa_batch_table.c.id == batch_id
+        ).values(processed_files=processed_files)
+        session.execute(stmt)
+        
+        # If all files are processed, mark batch as completed
+        if processed_files >= batch.total_files:
+            stmt = update(gold_qa_batch_table).where(
+                gold_qa_batch_table.c.id == batch_id
+            ).values(status="completed")
+            session.execute(stmt)
+        
         session.commit()

@@ -233,14 +233,14 @@ class Gemini(LLM):
             raise Exception(f"Model {self.model} does not support embeddings")
 
         body = {
+            "model": f"models/{self.model}",
             "content": {
                 "parts": [
                     {
                         "text": text
                     }
                 ]
-            },
-            "model": f"models/{self.model}"
+            }
         }
 
         headers = {
@@ -249,7 +249,7 @@ class Gemini(LLM):
         }
 
         response = requests.post(
-            "https://generativelanguage.googleapis.com/v1beta/models/" + self.model + ":embedContent",
+            f"https://generativelanguage.googleapis.com/v1beta/models/{self.model}:embedContent",
             json=body,
             headers=headers
         )

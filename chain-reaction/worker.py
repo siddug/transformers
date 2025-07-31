@@ -14,7 +14,8 @@ if __name__ == '__main__':
     # Create separate processes for each worker
     workers = [
         multiprocessing.Process(target=start_worker, args=(['default', 'github'],)),
-        multiprocessing.Process(target=start_worker, args=(['rag'],))
+        multiprocessing.Process(target=start_worker, args=(['rag'],)),
+        multiprocessing.Process(target=start_worker, args=(['qa'],))
     ]
     
     # Start all workers

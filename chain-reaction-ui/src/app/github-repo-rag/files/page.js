@@ -4,6 +4,7 @@ import { useState, useEffect } from "react";
 import { useSearchParams } from "next/navigation";
 import Select from "@/components/Select";
 import Button from "@/components/Button";
+import ReactMarkdown from "react-markdown";
 
 export default function GithubRepoRAGFilesPage() {
   const searchParams = useSearchParams();
@@ -16,6 +17,8 @@ export default function GithubRepoRAGFilesPage() {
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(100);
   const [totalNumFiles, setTotalNumFiles] = useState(0);
+  const [refreshInterval, setRefreshInterval] = useState("1min");
+  const [lastActivity, setLastActivity] = useState(Date.now());
   
   // RAG tab state
   const [question, setQuestion] = useState('');
@@ -23,30 +26,61 @@ export default function GithubRepoRAGFilesPage() {
   const [ragLoading, setRagLoading] = useState(false);
   const [currentRequestId, setCurrentRequestId] = useState(null);
 
+  const fetchFiles = async () => {
+    if (!repoId) return;
+    setLoading(true);
+    const response = await fetch(
+      `http://localhost:8000/chain/samples/github-rag/files`,
+      {
+        method: "POST",
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          repo_id: repoId,
+          page: page,
+          page_size: pageSize,
+        }),
+      }
+    );
+    const data = await response.json();
+    setFiles(data.files);
+    setTotalNumFiles(data.total_num_files);
+    setLoading(false);
+  };
+
   useEffect(() => {
-    const fetchFiles = async () => {
-      setLoading(true);
-      const response = await fetch(
-        `http://localhost:8000/chain/samples/github-rag/files`,
-        {
-          method: "POST",
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            repo_id: repoId,
-            page: page,
-            page_size: pageSize,
-          }),
-        }
-      );
-      const data = await response.json();
-      setFiles(data.files);
-      setTotalNumFiles(data.total_num_files);
-      setLoading(false);
-    };
     fetchFiles();
   }, [repoId, page, pageSize]);
+
+  // Auto-refresh setup
+  useEffect(() => {
+    const intervals = {
+      "1min": 60000,
+      "5min": 300000,
+    };
+
+    const intervalId = setInterval(() => {
+      const timeSinceActivity = Date.now() - lastActivity;
+      if (timeSinceActivity < 3600000) {
+        // 1 hour
+        fetchFiles();
+      }
+    }, intervals[refreshInterval]);
+
+    return () => clearInterval(intervalId);
+  }, [refreshInterval, lastActivity, repoId, page, pageSize]);
+
+  // Track user activity
+  useEffect(() => {
+    const handleActivity = () => setLastActivity(Date.now());
+    window.addEventListener("click", handleActivity);
+    window.addEventListener("keydown", handleActivity);
+    return () => {
+      window.removeEventListener("click", handleActivity);
+      window.removeEventListener("keydown", handleActivity);
+    };
+  }, []);
 
   const handleAskQuestion = async () => {
     if (!question.trim()) return;
@@ -112,6 +146,14 @@ export default function GithubRepoRAGFilesPage() {
             }]);
             setRagLoading(false);
             setCurrentRequestId(null);
+          } else if (data.status.status === 'error') {
+            clearInterval(pollInterval);
+            setRagLoading(false);
+            setCurrentRequestId(null);
+            setMessages(prev => [...prev, {
+              role: 'assistant',
+              content: data.status.response_details.response
+            }]);
           }
         }
       } catch (error) {
@@ -162,13 +204,29 @@ export default function GithubRepoRAGFilesPage() {
           >
             RAG
           </button>
+          <button
+            onClick={() => window.location.href = `/github-repo-rag/qa-generation?repo_id=${repoId}`}
+            className="py-2 px-1 border-b-2 border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300 font-medium text-sm"
+          >
+            Q&A Generation
+          </button>
         </nav>
       </div>
 
       {activeTab === 'files' ? (
         <div className="space-y-6">
-          <div>
-            <h2 className="text-xl font-bold mb-4">Files</h2>
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="text-xl font-bold">Files</h2>
+            <Select
+              label="Auto-refresh"
+              value={refreshInterval}
+              onChange={(e) => setRefreshInterval(e.target.value)}
+              options={[
+                { value: "1min", label: "1 minute" },
+                { value: "5min", label: "5 minutes" },
+              ]}
+            />
+          </div>
           {loading ? (
             <div className="flex justify-center py-8">
               <div className="text-gray-500">Loading files...</div>
@@ -238,8 +296,7 @@ export default function GithubRepoRAGFilesPage() {
             </table>
           </div>
           )}
-        </div>
-        <div className="flex items-center justify-between">
+          <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
             <span className="text-sm text-gray-700">Show</span>
             <Select
@@ -276,7 +333,7 @@ export default function GithubRepoRAGFilesPage() {
             </Button>
           </div>
         </div>
-      </div>
+        </div>
       ) : (
         <div className="space-y-6">
           <div>
@@ -321,7 +378,9 @@ export default function GithubRepoRAGFilesPage() {
                     <div className="font-semibold mb-1">
                       {message.role === 'user' ? 'You' : 'Assistant'}
                     </div>
-                    <div className="whitespace-pre-wrap">{message.content}</div>
+                    <div className="prose prose-sm max-w-none">
+                      <ReactMarkdown>{message.content}</ReactMarkdown>
+                    </div>
                   </div>
                 ))
               )}
@@ -334,6 +393,14 @@ export default function GithubRepoRAGFilesPage() {
               )}
             </div>
           </div>
+        </div>
+      )}
+
+      {Date.now() - lastActivity > 3600000 && (
+        <div className="mt-4 p-4 bg-yellow-50 border border-yellow-200 rounded-lg">
+          <p className="text-sm text-yellow-800">
+            Data might be stale. Refresh has been paused due to inactivity. Click anywhere to resume auto-refresh.
+          </p>
         </div>
       )}
     </div>

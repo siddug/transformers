@@ -1,12 +1,12 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, use } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import Button from '@/components/Button';
 
 export default function GithubRepoRAGFilePage({ params }) {
     const router = useRouter();
-    const { file_id } = params;
+    const { file_id } = use(params);
     const [file, setFile] = useState(null);
     const [loading, setLoading] = useState(false);
 

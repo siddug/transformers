@@ -36,13 +36,46 @@ Implementation:
     - User can see the files and folders in the repo with status of the files (processing, processed, failed)
     - User can ask questions about the codebase
     - For each question, create a flow run and show the status of the flow run
+4. Synthetic Q&A generation
+    - Given a repo, generate synthetic Q&A pairs - API to start this job
+        - For every file in the repo, for which we have parsed text, create a sub job. 
+        - Create a batch id for the sub job.
+    - In the sub job, we create chain-reaction-flow. The flow should do this:
+        - For the file, for each chunk, first ask LLM to score if the chunk has sensible content to create a question and answer.
+        - The LLM should return a score for each chunk. If the score is above a threshold, then we can create a question and answer for the chunk.
+        - The scoring should be based on the following criteria: (0-1 float per score. Then avg it.)
+            - Clarity of the chunk (how well the chunk is written)
+            - Depth of the chunk (how much information is there in the chunk)
+            - Structure of the chunk (how well the chunk is structured)
+            - Relevance of the chunk to the codebase (how well the chunk is relevant to the codebase)
+        - If the score is above a threshold (default to 0.5), then we can create a question and answer for the chunk.
+        - To create a question and answer for the chunk, first get related chunks from the vector database for this chunk.
+        - Then ask LLM to create a question for the chunk using the related chunks as context 
+        - Each question and answer, go through another flow
+            - First ask LLM to score if the question is good. Good = score 0-1 on self-containment and clarity 
+            - If the score is above a threshold (default to 0.5), then add we start evolution flow
+                - In the evolution flow, we take the question and answer and ask LLM to evolve it.
+                - Two times, take the quesiton through following steps:
+                    - pick one of reasoning, multicontext, concretizing, constrained, comparative, hypothetical, inbreadth
+                    - if reasoning, then ask LLM to improve the question to make it involve multi-step logical thinking
+                    - if multicontext, then ask LLM to improve the question to make sure all relevant information from context is included in the question
+                    - if concretizing, then ask LLM to improve the question to make it more specific and concrete
+                    - if constrained, then ask LLM to improve the question to introduce a condition or restriction, testing the model's ability to operate within specific limits.
+                    - if comparative, then ask LLM to improve the question to compare two or more concepts or objects
+                    - if hypothetical, then ask LLM to improve the question to make it a hypothetical question
+                    - if inbreadth, then ask LLM to improve the question to make it more general and broad to touch on related concepts
+                - After the evolution, take the question and using the context, create an answer for the question
+                - Save the question and answer in the database
+        - When a job is completed, check if there are any pending jobs for the same batch id. If not, then mark the batch as completed.
+    - Expose an API to get the QA batches. Then an API to get the QA pairs for a given batch id (paginated)
+    - In the Github RAG UI, new tab for Synthetic Q&A generation. which uses the batch list + create + list QA of a batch.
+5. Evals
 
 Next steps:
 1. How do we eval this? (Checkout NDCG and Relevancy + Synthetic Q&A generation)
     - What's NDCG?
     - In the retreival step, how do we calculate Contextual Relevancy/ Recall/ Precision?
     - In the generation step, how do we calculate Answer Relevancy/ Faithfulness?
-    - How do we generate synthetic Q&A so that we can evaluate the system?
 2. What are the generic metrics that we can use to evaluate the system? So I can benchmark RAG against agents?
     - G-eval on the system (custom criteria + eval steps + threshold and using llms to score); Tonality, Safety, Coherence, Answer correctness
     - DAG on the system (graph based evaluation of the system)
@@ -50,47 +83,22 @@ Next steps:
 4. Instead of making it a fixed RAG, can we make it an agent with more tools?
 
 
-PG DB schema:
-- Repo
-    - id (auto gen uuid)
-    - owner
-    - name
-    - branch
-    - added_at
-- File
-    - id (auto gen uuid)
-    - repo_id (foreign key to Repo.id)
-    - path
-    - raw_content
-    - summary
-    - summary_status (processing, processed, failed)
-    - chunks_status (processing, processed, failed)
-    - added_at
-
-Qdrant DB schema:
-- Chunk
-    - id (auto gen uuid)
-    - repo_id 
-    - file_id
-    - file_path
-    - raw_chunk_text
-    - vector_embeddings
-    - added_at
+# DB schema is now in database.py
 """
 
 import uuid
-from database import repo_table, file_table, engine, github_queue, rag_requests_table, rag_queue
+from database import repo_table, file_table, engine, github_queue, rag_requests_table, rag_queue, qa_queue, gold_qa_batch_table, gold_qa_table
 from sqlalchemy.orm import Session
-from sqlalchemy import select, func, insert
+from sqlalchemy import select, func, insert, update
 from main import Block, Chain
 from utils.llm import Mistral, Gemini
 import os
 from dotenv import load_dotenv
 import time
 from qdrant_client import QdrantClient
+from qdrant_client.models import Filter, FieldCondition, MatchValue
 
 load_dotenv()
-
 
 # Ingestion and Repo API fn's that will be used by server.py
 
@@ -233,7 +241,8 @@ def get_rag_request_status(request_id: str):
 class EmbeddingGenBlock(Block):
     def __init__(self, logging: bool = False):
         super().__init__(name="EmbeddingGenBlock", description="EmbeddingGenBlock is a block that generates an embedding for a given text.", retries=3, retry_delay=1, logging=logging)
-        self.embeddings_model = Mistral(api_key=os.getenv("MISTRAL_API_KEY"), model="codestral-embed")
+        # self.embeddings_model = Mistral(api_key=os.getenv("MISTRAL_API_KEY"), model="codestral-embed")
+        self.embeddings_model = Gemini(api_key=os.getenv("GEMINI_API_KEY"), model="gemini-embedding-001")
         self.delay = 1
 
     def prepare(self, context: dict):
@@ -243,7 +252,8 @@ class EmbeddingGenBlock(Block):
         # increase delay with exponential backoff
         time.sleep(self.delay)
         self.delay *= 2
-        return ["success", self.embeddings_model.generate_embeddings(prepare_response, "codestral-embed")]
+        # return ["success", self.embeddings_model.generate_embeddings(prepare_response, "codestral-embed")]
+        return ["success", self.embeddings_model.generate_embeddings(prepare_response, "gemini-embedding-001")]
     
     def execute_fallback(self, context, prepare_response, error):
         return ["error", str(error)]
@@ -254,8 +264,9 @@ class EmbeddingGenBlock(Block):
         return "default"
 
 class VectorSearchBlock(Block):
-    def __init__(self, logging: bool = False):
+    def __init__(self, repo_id: uuid.UUID, logging: bool = False):
         super().__init__(name="VectorSearchBlock", description="VectorSearchBlock is a block that searches the vector database for a given embedding.", retries=3, retry_delay=1, logging=logging)
+        self.repo_id = repo_id
         self.qdrant = QdrantClient(host=os.getenv("QDRANT_HOST"), port=int(os.getenv("QDRANT_PORT")))
 
     def prepare(self, context: dict):
@@ -268,7 +279,15 @@ class VectorSearchBlock(Block):
         
         # search the vector database for the embedding
         # There should be repo level filter here
-        results = self.qdrant.search(collection_name="chunks", query_vector=prepare_response, limit=10, with_payload=True)
+        results = self.qdrant.search(
+            collection_name="chunks", 
+            query_vector=prepare_response, 
+            limit=10, 
+            with_payload=True, 
+            query_filter=Filter(
+                must=[FieldCondition(key="repo_id", match=MatchValue(value=str(self.repo_id)))]
+            )
+        )
 
         # from qdrant extract the chunk raw_chunk_text and file_path
         chunks = [{"raw_chunk_text": result.payload["raw_chunk_text"], "file_path": result.payload["file_path"]} for result in results]
@@ -282,7 +301,7 @@ class VectorSearchBlock(Block):
             context["chunks"] = execute_response[1]
             context["status"] = "success"
         else:
-            context["status"] = "error"
+            context["status"] = "error".response_details.response
             context["error"] = execute_response[1]
         return "default"
 
@@ -290,8 +309,9 @@ class VectorSearchBlock(Block):
 class LLMBlock(Block):
     def __init__(self, logging: bool = False):
         super().__init__(name="LLMBlock", description="LLMBlock is a block that generates a response using a given prompt and context.", retries=3, retry_delay=1, logging=logging)
-        self.mistral = Mistral(api_key=os.getenv("MISTRAL_API_KEY"), model="mistral-large-latest")
+        # self.mistral = Mistral(api_key=os.getenv("MISTRAL_API_KEY"), model="mistral-large-latest")
         self.gemini = Gemini(api_key=os.getenv("GEMINI_API_KEY"), model="gemini-2.0-flash")
+        self.mistral = self.gemini
         self.llm_council = 0
 
     def prepare(self, context: dict):
@@ -347,10 +367,10 @@ class LLMBlock(Block):
         context["status"] = execute_response[0]
         return "default"
 
-def work_on_rag_request(messages: list[dict]):
+def work_on_rag_request(messages: list[dict], repo_id: uuid.UUID):
     # create a new flow run
     embedding = EmbeddingGenBlock()
-    vector_search = VectorSearchBlock()
+    vector_search = VectorSearchBlock(repo_id)
     llm = LLMBlock()
     embedding >> vector_search
     vector_search >> llm
@@ -360,3 +380,97 @@ def work_on_rag_request(messages: list[dict]):
     context = {"text": messages[-1]["content"]}
     flow.run(context)
     return context
+
+# Q&A Generation API functions
+def create_qa_batch(repo_id: uuid.UUID):
+    """Create a new Q&A batch for a repository"""
+    with Session(engine) as session:
+        # Check if repo exists
+        stmt = select(repo_table.c.id).where(repo_table.c.id == repo_id)
+        repo_exists = session.execute(stmt).scalar_one_or_none()
+        if not repo_exists:
+            raise ValueError(f"Repository with id {repo_id} not found")
+        
+        # Count files with processed chunks
+        stmt = select(func.count(file_table.c.id)).where(
+            file_table.c.repo_id == repo_id,
+            file_table.c.chunks_status == "processed"
+        )
+        total_files = session.execute(stmt).scalar_one()
+        
+        if total_files == 0:
+            raise ValueError("No processed files found for this repository")
+        
+        # Create a new batch
+        result = session.execute(
+            insert(gold_qa_batch_table)
+            .values(repo_id=repo_id, total_files=total_files, status="idle")
+            .returning(gold_qa_batch_table.c.id)
+        )
+        batch_id = result.scalar_one()
+        session.commit()
+        
+        # Create job info
+        job_creation_info = {
+            "job_id": f"qa-batch-{batch_id}",
+            "batch_id": batch_id,
+        }
+        
+        return batch_id, job_creation_info
+
+def get_qa_batches(repo_id: uuid.UUID, page: int = 1, page_size: int = 20):
+    """Get Q&A batches for a repository"""
+    with Session(engine) as session:
+        stmt = select(gold_qa_batch_table).where(
+            gold_qa_batch_table.c.repo_id == repo_id
+        ).order_by(
+            gold_qa_batch_table.c.added_at.desc()
+        ).offset((page - 1) * page_size).limit(page_size)
+        
+        batches = session.execute(stmt).fetchall()
+        batches = [{
+            "id": str(batch.id),
+            "repo_id": str(batch.repo_id),
+            "status": batch.status,
+            "total_files": batch.total_files,
+            "processed_files": batch.processed_files,
+            "added_at": batch.added_at.isoformat() if batch.added_at else None
+        } for batch in batches]
+        
+        total_batches = session.execute(
+            select(func.count(gold_qa_batch_table.c.id))
+            .where(gold_qa_batch_table.c.repo_id == repo_id)
+        ).scalar_one()
+        
+        return batches, total_batches, page, page_size
+
+def get_qa_pairs(batch_id: uuid.UUID, page: int = 1, page_size: int = 50):
+    """Get Q&A pairs for a batch"""
+    with Session(engine) as session:
+        stmt = select(gold_qa_table).where(
+            gold_qa_table.c.batch_id == batch_id
+        ).order_by(
+            gold_qa_table.c.added_at.desc()
+        ).offset((page - 1) * page_size).limit(page_size)
+        
+        qa_pairs = session.execute(stmt).fetchall()
+        qa_pairs = [{
+            "id": str(qa.id),
+            "batch_id": str(qa.batch_id),
+            "file_id": str(qa.file_id),
+            "chunk_id": qa.chunk_id,
+            "question": qa.question,
+            "answer": qa.answer,
+            "evolution_strategy": qa.evolution_strategy,
+            "question_score": qa.question_score,
+            "chunk_score": qa.chunk_score,
+            "flow_logs": qa.flow_logs,
+            "added_at": qa.added_at.isoformat() if qa.added_at else None
+        } for qa in qa_pairs]
+        
+        total_pairs = session.execute(
+            select(func.count(gold_qa_table.c.id))
+            .where(gold_qa_table.c.batch_id == batch_id)
+        ).scalar_one()
+        
+        return qa_pairs, total_pairs, page, page_size

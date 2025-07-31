@@ -28,6 +28,7 @@ redis_conn = redis.from_url(REDIS_URL)
 task_queue = Queue(connection=redis_conn)
 github_queue = Queue('github', connection=redis_conn)
 rag_queue = Queue('rag', connection=redis_conn)
+qa_queue = Queue('qa', connection=redis_conn)
 
 # DB table setup. On init, create the tables if they don't exist
 """
@@ -50,6 +51,24 @@ rag_queue = Queue('rag', connection=redis_conn)
     - id (auto gen uuid)
     - request_details (jsonb)
     - response_details (jsonb)
+    - added_at
+- GoldQABatch
+    - id (auto gen uuid)
+    - repo_id (foreign key to Repo.id)
+    - status (idle, running, completed, failed)
+    - total_files (int)
+    - processed_files (int)
+    - added_at
+- GoldQA
+    - id (auto gen uuid)
+    - batch_id (foreign key to GoldQABatch.id)
+    - file_id (foreign key to File.id)
+    - chunk_id (str - from qdrant)
+    - question (str)
+    - answer (str)
+    - evolution_strategy (str - reasoning, multicontext, etc)
+    - question_score (float)
+    - chunk_score (float)
     - added_at
 """
 repo_table = Table("repos", metadata,
@@ -75,6 +94,27 @@ rag_requests_table = Table("rag_requests", metadata,
     Column("response_details", JSONB, nullable=True),
     Column("added_at", DateTime, nullable=False, default=datetime.utcnow),
 )
+gold_qa_batch_table = Table("gold_qa_batches", metadata,
+    Column("id", UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")),
+    Column("repo_id", UUID(as_uuid=True), ForeignKey("repos.id"), nullable=False),
+    Column("status", String, nullable=False, default="idle"),
+    Column("total_files", Integer, nullable=False, default=0),
+    Column("processed_files", Integer, nullable=False, default=0),
+    Column("added_at", DateTime, nullable=False, default=datetime.utcnow),
+)
+gold_qa_table = Table("gold_qa", metadata,
+    Column("id", UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")),
+    Column("batch_id", UUID(as_uuid=True), ForeignKey("gold_qa_batches.id"), nullable=False),
+    Column("file_id", UUID(as_uuid=True), ForeignKey("files.id"), nullable=False),
+    Column("chunk_id", String, nullable=False),
+    Column("question", String, nullable=False),
+    Column("answer", String, nullable=False),
+    Column("evolution_strategy", String, nullable=True),
+    Column("question_score", Float, nullable=True),
+    Column("chunk_score", Float, nullable=True),
+    Column("flow_logs", JSONB, nullable=True),
+    Column("added_at", DateTime, nullable=False, default=datetime.utcnow),
+)
 
 def create_tables():
     """Create the tables if they don't exist"""
@@ -96,7 +136,7 @@ def create_qdrant_chunks_collection():
     if not qdrant_client.collection_exists(collection_name="chunks"):
         qdrant_client.create_collection(
             collection_name="chunks",
-            vectors_config=VectorParams(size=1536, distance=Distance.COSINE),
+            vectors_config=VectorParams(size=3072, distance=Distance.COSINE),
             on_disk_payload=True,
         )
         print("Qdrant chunks collection created successfully")

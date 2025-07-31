@@ -14,7 +14,7 @@ from fastapi import UploadFile, File, HTTPException
 from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from io import BytesIO
-from apps.github_rag import ingest_repo, get_repo_files, get_file_details, create_rag_request, get_rag_request_status
+from apps.github_rag import ingest_repo, get_repo_files, get_file_details, create_rag_request, get_rag_request_status, create_qa_batch, get_qa_batches, get_qa_pairs
 
 # This is a qucik api server to test the chain reaction apps
 app = FastAPI()
@@ -245,5 +245,154 @@ class GithubRAGRequestStatusRequest(BaseModel):
 def run_github_rag_request_status(request: GithubRAGRequestStatusRequest):
     status = get_rag_request_status(request.request_id)
     return {"status": status, "success": "ok"}
+
+# Q&A Generation endpoints
+class CreateQABatchRequest(BaseModel):
+    repo_id: str
+
+@app.post("/chain/samples/github-rag/qa/batch/create")
+def create_qa_batch_endpoint(request: CreateQABatchRequest):
+    try:
+        batch_id, job_creation_info = create_qa_batch(request.repo_id)
+        if job_creation_info:
+            from database import qa_queue
+            from tasks import generate_qa_batch
+            qa_queue.enqueue(generate_qa_batch, batch_id, job_id=job_creation_info["job_id"])
+        return {"batch_id": batch_id, "job_creation_info": job_creation_info, "success": "ok"}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+class GetQABatchesRequest(BaseModel):
+    repo_id: str
+    page: int = 1
+    page_size: int = 20
+
+@app.post("/chain/samples/github-rag/qa/batches")
+def get_qa_batches_endpoint(request: GetQABatchesRequest):
+    batches, total_batches, page, page_size = get_qa_batches(request.repo_id, request.page, request.page_size)
+    return {"batches": batches, "total_batches": total_batches, "page": page, "page_size": page_size, "success": "ok"}
+
+class GetQAPairsRequest(BaseModel):
+    batch_id: str
+    page: int = 1
+    page_size: int = 50
+
+@app.post("/chain/samples/github-rag/qa/pairs")
+def get_qa_pairs_endpoint(request: GetQAPairsRequest):
+    qa_pairs, total_pairs, page, page_size = get_qa_pairs(request.batch_id, request.page, request.page_size)
+    return {"qa_pairs": qa_pairs, "total_pairs": total_pairs, "page": page, "page_size": page_size, "success": "ok"}
+
+# Test endpoint to create a single QA job for the first batch
+@app.post("/test/qa/single-job")
+def test_qa_single_job(db: Session = Depends(get_db)):
+    """Test endpoint that creates one QA generation job for the first batch that exists"""
+    from database import gold_qa_batch_table, file_table, qa_queue
+    from tasks import generate_qa_for_file
+    from sqlalchemy import select
+    import uuid
+    
+    try:
+        # Get the first batch
+        stmt = select(gold_qa_batch_table.c.id, gold_qa_batch_table.c.repo_id).limit(1)
+        batch = db.execute(stmt).first()
+        
+        if not batch:
+            raise HTTPException(status_code=404, detail="No QA batches found in database")
+        
+        batch_id = batch.id
+        repo_id = batch.repo_id
+        
+        # Get the first file for this repo
+        stmt = select(file_table.c.id, file_table.c.path).where(file_table.c.repo_id == repo_id).limit(1)
+        file = db.execute(stmt).first()
+        
+        if not file:
+            raise HTTPException(status_code=404, detail=f"No files found for repo {repo_id}")
+        
+        file_id = file.id
+        file_path = file.path
+        
+        # Create a single job
+        job = qa_queue.enqueue(generate_qa_for_file, batch_id, file_id)
+        
+        return {
+            "message": "Test QA job created successfully",
+            "batch_id": str(batch_id),
+            "file_id": str(file_id),
+            "file_path": file_path,
+            "job_id": job.id,
+            "success": "ok"
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error creating test job: {str(e)}")
+
+# Diagnostic endpoint to check chunks for a file
+@app.get("/test/qa/check-chunks/{file_id}")
+def check_chunks_for_file(file_id: str, db: Session = Depends(get_db)):
+    """Check if chunks exist in Qdrant for a given file"""
+    from qdrant_client.models import Filter, FieldCondition, MatchValue
+    from database import file_table
+    from sqlalchemy import select
+    import uuid
+    
+    try:
+        # Get file info
+        stmt = select(file_table.c.repo_id, file_table.c.path, file_table.c.chunks_status).where(file_table.c.id == uuid.UUID(file_id))
+        file_info = db.execute(stmt).first()
+        
+        if not file_info:
+            raise HTTPException(status_code=404, detail=f"File {file_id} not found")
+        
+        repo_id = file_info.repo_id
+        file_path = file_info.path
+        chunks_status = file_info.chunks_status
+        
+        # Check chunks in Qdrant
+        results = qdrant_client.scroll(
+            collection_name="chunks",
+            scroll_filter=Filter(
+                must=[
+                    FieldCondition(key="file_id", match=MatchValue(value=str(file_id))),
+                    FieldCondition(key="repo_id", match=MatchValue(value=str(repo_id)))
+                ]
+            ),
+            limit=10,
+            with_payload=True
+        )
+        
+        chunks = results[0]
+        
+        # Also check without file_id filter to see if there are any chunks for this repo
+        repo_results = qdrant_client.scroll(
+            collection_name="chunks",
+            scroll_filter=Filter(
+                must=[
+                    FieldCondition(key="repo_id", match=MatchValue(value=str(repo_id)))
+                ]
+            ),
+            limit=5,
+            with_payload=True
+        )
+        
+        repo_chunks = repo_results[0]
+        
+        return {
+            "file_id": file_id,
+            "repo_id": str(repo_id),
+            "file_path": file_path,
+            "chunks_status": chunks_status,
+            "chunks_found_for_file": len(chunks),
+            "total_chunks_in_repo": len(repo_chunks),
+            "sample_chunk": chunks[0].payload if chunks else None,
+            "sample_repo_chunk": repo_chunks[0].payload if repo_chunks else None
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error checking chunks: {str(e)}")
 
 
