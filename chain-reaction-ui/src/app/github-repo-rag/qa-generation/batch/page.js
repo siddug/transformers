@@ -17,6 +17,7 @@ export default function QABatchDetailPage() {
   const [expandedQA, setExpandedQA] = useState({});
   const [refreshInterval, setRefreshInterval] = useState("1min");
   const [lastActivity, setLastActivity] = useState(Date.now());
+  const [archivingQA, setArchivingQA] = useState(null);
   
   const pageSize = 50;
 
@@ -89,6 +90,38 @@ export default function QABatchDetailPage() {
       ...prev,
       [qaId]: !prev[qaId]
     }));
+  };
+
+  // Archive Q&A pair
+  const archiveQAPair = async (qaId) => {
+    if (!confirm("Are you sure you want to archive this Q&A pair? This action cannot be undone.")) {
+      return;
+    }
+    
+    setArchivingQA(qaId);
+    try {
+      const response = await fetch(
+        "http://localhost:8000/chain/samples/github-rag/qa/pair/archive",
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ qa_id: qaId }),
+        }
+      );
+      const data = await response.json();
+      if (data.success === "ok") {
+        // Refresh Q&A pairs list
+        fetchQAPairs();
+      } else {
+        alert("Failed to archive Q&A pair");
+      }
+    } catch (error) {
+      console.error("Error archiving Q&A pair:", error);
+      alert("Failed to archive Q&A pair");
+    }
+    setArchivingQA(null);
   };
 
   const getStrategyBadge = (strategy) => {
@@ -165,13 +198,23 @@ export default function QABatchDetailPage() {
                     </h3>
                     <p className="text-gray-700">{qa.question}</p>
                   </div>
-                  <Button
-                    onClick={() => toggleExpanded(qa.id)}
-                    variant="ghost"
-                    size="sm"
-                  >
-                    {expandedQA[qa.id] ? "Collapse" : "Expand"}
-                  </Button>
+                  <div className="flex gap-2">
+                    <Button
+                      onClick={() => archiveQAPair(qa.id)}
+                      variant="secondary"
+                      size="sm"
+                      disabled={archivingQA === qa.id}
+                    >
+                      {archivingQA === qa.id ? "Archiving..." : "Archive"}
+                    </Button>
+                    <Button
+                      onClick={() => toggleExpanded(qa.id)}
+                      variant="ghost"
+                      size="sm"
+                    >
+                      {expandedQA[qa.id] ? "Collapse" : "Expand"}
+                    </Button>
+                  </div>
                 </div>
 
                 {expandedQA[qa.id] && (

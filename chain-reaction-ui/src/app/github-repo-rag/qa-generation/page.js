@@ -159,6 +159,12 @@ export default function QAGenerationPage() {
           >
             Q&A Generation
           </button>
+          <button
+            onClick={() => window.location.href = `/github-repo-rag/eval?repo_id=${repoId}`}
+            className="py-2 px-1 border-b-2 border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300 font-medium text-sm"
+          >
+            Evaluation
+          </button>
         </nav>
       </div>
 

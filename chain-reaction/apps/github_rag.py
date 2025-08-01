@@ -70,17 +70,104 @@ Implementation:
     - Expose an API to get the QA batches. Then an API to get the QA pairs for a given batch id (paginated)
     - In the Github RAG UI, new tab for Synthetic Q&A generation. which uses the batch list + create + list QA of a batch.
 5. Evals
+    - Now that we have synthetic Q&A pairs, we can evaluate the system.
+    - Create Evals
+        - Takes a QA batch id as input + repo id as input 
+        - Create new eval job in the db and queue it
+        - Once eval is created, for each question in the eval, create a placeholder entry in DB and create a sub job.
+        - APIs to fetch evals, create eval, get eval metrics paginated, get overall metrics.
+        - Use these APIs to create an eval UI inside Github RAG UI.
+    - Eval metrics
+        - Should have eval id, qa id, and metrics. 
+        - Each sub job works on a qa id and inserts the metrics in the db
+        - Take the Q & expected A pair + repo_id.
+        - Step 1: Compute the output of the RAG system for the given Q to generate actual A. Remember to save the relevant chunks since we need it for the metrics.
+        - Step 2: Compute the metrics for the actual A.
+            - G-Eval (Measures generation quality using G-Eval approach)
+                - Correctness
+                    - Eval steps: 
+                        - Check whether the facts in 'actual output' contradicts any facts in 'expected output'
+                        - Penalize ommission of facts in 'actual output'
+                        - Vague language in 'actual output' is ok
+                    - Input: Q, expected A, actual A, repo_id
+                - Coherence
+                    - Eval steps:
+                        - Evaluate whether the response uses clear and direct language.
+                        - Check if the explanation avoids jargon or explains it when used.
+                        - Assess whether complex ideas are presented in a way that's easy to follow.
+                        - Identify any vague or confusing parts that reduce understanding.
+                    - Input: Q, actual A
+                - Tonality
+                    - Eval steps:
+                        - Determine whether the actual output maintains a professional tone throughout.
+                        - Evaluate if the language in the actual output reflects expertise and domain-appropriate formality.
+                        - Ensure the actual output stays contextually appropriate and avoids casual or ambiguous expressions.
+                        - Check if the actual output is clear, respectful, and avoids slang or overly informal phrasing.
+                    - Input: Q, actual A
+                - Safety
+                    - Eval steps:
+                        - Check whether the output includes any real or plausible personal information (e.g., names, phone numbers, emails.
+                        - Identify any hallucinated PII or training data artifacts that could compromise user privacy.
+                        - Ensure the output uses placeholders or anonymized data when applicable.
+                        - Verify that sensitive information is not exposed even in edge cases or unclear prompts.
+                    - Input: Q, actual A
+                - Ask LLM to score the actual A against the expected A for the question on all og the above metrics.
+                    - For each metric, it should return a score between 0 and 1 for every evaluation step.
+                    - Then take the average of the scores for each metric.
+                    - For each metric, if the score is below a threshold (default to 0.5), then mark it as failed. else as passed.
+                - At the end we should have 5 metrics (scored using G-Eval approach)
+            - DAG approach (Measures generation quality using DAG approach)
+                - Use a tree like approach to evaluate the system with binary nodes everywhere and leaf nodes as scores. 
+                - Tree goes like this:
+                    - Is the actual output and expected output similar?
+                        - If yes, then the score is 10.
+                    - If no, is the actual output wrong/ partially correct or correct?
+                        - If correct, is the actual output answers everything required to answer the question?
+                            - If yes, then the score is 10.
+                            - If no, then the score is 5
+                        - If other, does the actual ouput include any correct information in it?
+                            - If yes, 
+                                - Does the actual output miss any information from the expected output?
+                                    - If yes, then the score is 1
+                                    - If no, then the score is 3
+                            - If no, then the score is 0
+                - Ask the LLM to reason using the rubric above and return the score.
+                - At the end we should have 1 metric (scored using DAG approach)
+                - Divide the score by 10 to get the final score.
+                - Pass this metric if it is > 0.3
+            - Contextual Relevancy (Measures retrieval quality)
+                - Use the question + relevant chunks as input. Convert the chunks into sentences. 
+                - Ask LLM to score contextual relevancy as #relevant-statements/#total-statements.
+                - Pass this metric if it is > 0.3
+            - Contextual Precision (Measures retrieval quality)
+                - Takes in question + expected output + relevant chunks
+                - For each chunk in the order (k = 1 to n), create a scoring metric (binary 0 or 1) on whether the chunk is useful to answer the question.
+                - Then 1/n(Sigma(k = 1 to n, number of relevant chunks upto position k)/k * rk) (rk = 0 or 1)
+                - Pass this metric if it is > 0.3
+            - Contextual Recall (Measures retrieval quality)
+                - Take the question + expected output + relevant chunks as input.
+                - Ask LLM to split the expected output into statements. 
+                - Then ask LLM to score the contextual recall as #attributed-statements/#total-statements. (attributed-statements = statements that are present in the relevant chunks)
+                - Pass this metric if it is > 0.7
+            - Answer Relevancy (Measures generation quality)
+                - Takes in question + actual output
+                - Ask LLM to split the actual output into statements.
+                - Ask LLM to score the answer relevancy as #relevant-statements/#total-statements. (relevant-statements = statements that are relevant to the question)
+                - Pass this metric if it is > 0.7
+            - Answer Faithfulness (Measures generation quality)
+                - Takes in question + actual output + relevant chunks
+                - Ask LLM to split the actual output into truthful claims.
+                - Then ask LLM to score the answer faithfulness as #true-claims/#total-claims. (true-claims = claims that are true based on the relevant chunks)
+                - Pass this metric if it is > 0.7
+        - For each metric (5 G-eval + 1 DAG + 3 Contextual + 2 Answer), ask LLM to give a 2-3 sentence explanation for the metric. This helpes the LLM think.
+        - To save on LLM calls, Send quesiton + actual output + expected output + relevant chunks to the LLM and ask it to score on all the metrics at once.
+        - Step 3: Save these metrics (with reasons etc) in the db.
+    - Expose an API to get the eval metrics for a given eval id.
+    - Expose an API to get the overall metrics for a given eval id. Which takes in the eval id and returns the overall metrics for all individual metrics across all questions.
 
 Next steps:
-1. How do we eval this? (Checkout NDCG and Relevancy + Synthetic Q&A generation)
-    - What's NDCG?
-    - In the retreival step, how do we calculate Contextual Relevancy/ Recall/ Precision?
-    - In the generation step, how do we calculate Answer Relevancy/ Faithfulness?
-2. What are the generic metrics that we can use to evaluate the system? So I can benchmark RAG against agents?
-    - G-eval on the system (custom criteria + eval steps + threshold and using llms to score); Tonality, Safety, Coherence, Answer correctness
-    - DAG on the system (graph based evaluation of the system)
-3. How do we make the UI interaction better? Instead of polling system? - WebSockets is a good option?
-4. Instead of making it a fixed RAG, can we make it an agent with more tools?
+1. How do we make the UI interaction better? Instead of polling system? - WebSockets is a good option?
+2. Instead of making it a fixed RAG, can we make it an agent with more tools?
 
 
 # DB schema is now in database.py
@@ -448,7 +535,8 @@ def get_qa_pairs(batch_id: uuid.UUID, page: int = 1, page_size: int = 50):
     """Get Q&A pairs for a batch"""
     with Session(engine) as session:
         stmt = select(gold_qa_table).where(
-            gold_qa_table.c.batch_id == batch_id
+            gold_qa_table.c.batch_id == batch_id,
+            gold_qa_table.c.archived == False
         ).order_by(
             gold_qa_table.c.added_at.desc()
         ).offset((page - 1) * page_size).limit(page_size)
@@ -470,7 +558,24 @@ def get_qa_pairs(batch_id: uuid.UUID, page: int = 1, page_size: int = 50):
         
         total_pairs = session.execute(
             select(func.count(gold_qa_table.c.id))
-            .where(gold_qa_table.c.batch_id == batch_id)
+            .where(
+                gold_qa_table.c.batch_id == batch_id,
+                gold_qa_table.c.archived == False
+            )
         ).scalar_one()
         
         return qa_pairs, total_pairs, page, page_size
+
+def archive_qa_pair(qa_id: uuid.UUID):
+    """Archive a Q&A pair"""
+    with Session(engine) as session:
+        stmt = update(gold_qa_table).where(
+            gold_qa_table.c.id == qa_id
+        ).values(archived=True)
+        
+        result = session.execute(stmt)
+        session.commit()
+        
+        if result.rowcount == 0:
+            return False
+        return True

@@ -112,7 +112,7 @@ services:
       - "9181:9181"
     environment:
       - RQ_DASHBOARD_REDIS_URL=redis://redis:6379
-      - RQ_DASHBOARD_QUEUES=default,github
+      - RQ_DASHBOARD_QUEUES=default,github,qa,rag,eval
     depends_on:
       - redis
 

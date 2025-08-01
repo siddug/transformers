@@ -7,7 +7,7 @@ from apps.translator import Translator
 from apps.grounded_gpt import Search, Draft, Main
 from main import Chain
 from pydantic import BaseModel
-from database import get_db, qdrant_client, task_queue, create_tables, create_qdrant_chunks_collection, github_queue, rag_queue
+from database import get_db, qdrant_client, task_queue, create_tables, create_qdrant_chunks_collection, github_queue, rag_queue, eval_queue
 from tasks import long_running_task, process_translation_batch, process_vector_embedding, generate_file_jobs_for_repo, generate_rag_response
 from s3_utils import upload_file, download_file, delete_file, list_files, get_file_info
 from fastapi import UploadFile, File, HTTPException
@@ -15,6 +15,7 @@ from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from io import BytesIO
 from apps.github_rag import ingest_repo, get_repo_files, get_file_details, create_rag_request, get_rag_request_status, create_qa_batch, get_qa_batches, get_qa_pairs
+from apps.eval_api import create_eval_job, get_eval_jobs, get_eval_metrics, get_eval_overall_metrics
 
 # This is a qucik api server to test the chain reaction apps
 app = FastAPI()
@@ -269,7 +270,8 @@ class GetQABatchesRequest(BaseModel):
 
 @app.post("/chain/samples/github-rag/qa/batches")
 def get_qa_batches_endpoint(request: GetQABatchesRequest):
-    batches, total_batches, page, page_size = get_qa_batches(request.repo_id, request.page, request.page_size)
+    import uuid
+    batches, total_batches, page, page_size = get_qa_batches(uuid.UUID(request.repo_id), request.page, request.page_size)
     return {"batches": batches, "total_batches": total_batches, "page": page, "page_size": page_size, "success": "ok"}
 
 class GetQAPairsRequest(BaseModel):
@@ -281,6 +283,18 @@ class GetQAPairsRequest(BaseModel):
 def get_qa_pairs_endpoint(request: GetQAPairsRequest):
     qa_pairs, total_pairs, page, page_size = get_qa_pairs(request.batch_id, request.page, request.page_size)
     return {"qa_pairs": qa_pairs, "total_pairs": total_pairs, "page": page, "page_size": page_size, "success": "ok"}
+
+class ArchiveQAPairRequest(BaseModel):
+    qa_id: str
+
+@app.post("/chain/samples/github-rag/qa/pair/archive")
+def archive_qa_pair_endpoint(request: ArchiveQAPairRequest):
+    from apps.github_rag import archive_qa_pair
+    success = archive_qa_pair(request.qa_id)
+    if success:
+        return {"success": "ok", "message": "Q&A pair archived successfully"}
+    else:
+        raise HTTPException(status_code=404, detail="Q&A pair not found")
 
 # Test endpoint to create a single QA job for the first batch
 @app.post("/test/qa/single-job")
@@ -394,5 +408,49 @@ def check_chunks_for_file(file_id: str, db: Session = Depends(get_db)):
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error checking chunks: {str(e)}")
+
+# Evaluation endpoints
+class CreateEvalJobRequest(BaseModel):
+    qa_batch_id: str
+    repo_id: str
+
+@app.post("/chain/samples/github-rag/eval/create")
+def create_eval_job_endpoint(request: CreateEvalJobRequest):
+    try:
+        eval_job_id, job_creation_info = create_eval_job(request.qa_batch_id, request.repo_id)
+        if job_creation_info:
+            from tasks import process_eval_job
+            eval_queue.enqueue(process_eval_job, eval_job_id, job_id=job_creation_info["job_id"])
+        return {"eval_job_id": eval_job_id, "job_creation_info": job_creation_info, "success": "ok"}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+class GetEvalJobsRequest(BaseModel):
+    repo_id: str
+    page: int = 1
+    page_size: int = 20
+
+@app.post("/chain/samples/github-rag/eval/jobs")
+def get_eval_jobs_endpoint(request: GetEvalJobsRequest):
+    eval_jobs, total_jobs, page, page_size = get_eval_jobs(request.repo_id, request.page, request.page_size)
+    return {"eval_jobs": eval_jobs, "total_jobs": total_jobs, "page": page, "page_size": page_size, "success": "ok"}
+
+class GetEvalMetricsRequest(BaseModel):
+    eval_job_id: str
+    page: int = 1
+    page_size: int = 50
+
+@app.post("/chain/samples/github-rag/eval/metrics")
+def get_eval_metrics_endpoint(request: GetEvalMetricsRequest):
+    metrics, total_metrics, page, page_size = get_eval_metrics(request.eval_job_id, request.page, request.page_size)
+    return {"metrics": metrics, "total_metrics": total_metrics, "page": page, "page_size": page_size, "success": "ok"}
+
+class GetEvalOverallMetricsRequest(BaseModel):
+    eval_job_id: str
+
+@app.post("/chain/samples/github-rag/eval/overall-metrics")
+def get_eval_overall_metrics_endpoint(request: GetEvalOverallMetricsRequest):
+    overall_metrics = get_eval_overall_metrics(request.eval_job_id)
+    return {"overall_metrics": overall_metrics, "success": "ok"}
 
 

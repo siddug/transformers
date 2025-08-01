@@ -1,5 +1,5 @@
 import time
-from database import task_queue, github_queue, rag_queue, qa_queue, gold_qa_batch_table, gold_qa_table
+from database import task_queue, github_queue, rag_queue, qa_queue, eval_queue, gold_qa_batch_table, gold_qa_table, eval_job_table, eval_metrics_table
 from rq.decorators import job
 from utils.github import get_repo_files, get_repo_file_raw
 from database import repo_table, file_table, engine, insert_chunks, rag_requests_table
@@ -277,6 +277,117 @@ def generate_qa_for_file(batch_id: str, file_id: str):
             stmt = update(gold_qa_batch_table).where(
                 gold_qa_batch_table.c.id == batch_id
             ).values(status="completed")
+            session.execute(stmt)
+        
+        session.commit()
+
+@job("eval", connection=eval_queue.connection)
+def process_eval_job(eval_job_id: str):
+    """Process an eval job by creating sub-jobs for each Q&A pair"""
+    with Session(engine) as session:
+        # Get eval job details
+        stmt = select(eval_job_table).where(eval_job_table.c.id == eval_job_id)
+        eval_job = session.execute(stmt).fetchone()
+        if not eval_job:
+            raise ValueError(f"Eval job with id {eval_job_id} not found")
+        
+        # Update eval job status to running
+        stmt = update(eval_job_table).where(
+            eval_job_table.c.id == eval_job_id
+        ).values(status="running")
+        session.execute(stmt)
+        session.commit()
+        
+        # Get all Q&A pairs for this batch
+        stmt = select(gold_qa_table).where(
+            gold_qa_table.c.batch_id == eval_job.qa_batch_id,
+            gold_qa_table.c.archived == False
+        )
+        qa_pairs = session.execute(stmt).fetchall()
+        
+        # Create placeholder entries in eval_metrics for each Q&A pair
+        for qa in qa_pairs:
+            # Check if metric already exists
+            stmt = select(eval_metrics_table).where(
+                eval_metrics_table.c.eval_job_id == eval_job_id,
+                eval_metrics_table.c.qa_id == qa.id
+            )
+            existing_metric = session.execute(stmt).fetchone()
+            
+            if not existing_metric:
+                # Create placeholder entry
+                stmt = insert(eval_metrics_table).values(
+                    eval_job_id=eval_job_id,
+                    qa_id=qa.id,
+                    actual_answer="",
+                    relevant_chunks=[],
+                    metrics={"status": "pending"}
+                )
+                session.execute(stmt)
+        
+        session.commit()
+        
+        # Queue sub-jobs for each Q&A pair
+        for qa in qa_pairs:
+            job_id = f"eval-qa-{eval_job_id}-{qa.id}"
+            existing_job = eval_queue.fetch_job(job_id)
+            if not existing_job:
+                eval_queue.enqueue(
+                    evaluate_single_qa,
+                    eval_job_id=eval_job_id,
+                    qa_id=str(qa.id),
+                    repo_id=str(eval_job.repo_id),
+                    job_id=job_id
+                )
+
+@job("eval", connection=eval_queue.connection)
+def evaluate_single_qa(eval_job_id: str, qa_id: str, repo_id: str):
+    """Evaluate a single Q&A pair"""
+    from apps.eval_metrics import evaluate_qa_pair
+    
+    # Run the evaluation
+    metrics_result = evaluate_qa_pair(qa_id, repo_id)
+    
+    with Session(engine) as session:
+        # Update the eval metrics
+        stmt = update(eval_metrics_table).where(
+            eval_metrics_table.c.eval_job_id == eval_job_id,
+            eval_metrics_table.c.qa_id == qa_id
+        ).values(
+            actual_answer=metrics_result["actual_answer"],
+            relevant_chunks=metrics_result["relevant_chunks"],
+            metrics=metrics_result["metrics"]
+        )
+        session.execute(stmt)
+        
+        # Check if all Q&A pairs are processed
+        stmt = select(func.count()).select_from(eval_metrics_table).where(
+            eval_metrics_table.c.eval_job_id == eval_job_id,
+            eval_metrics_table.c.metrics["status"].astext != "completed"
+        )
+        pending_count = session.execute(stmt).scalar_one()
+        
+        # Update processed count
+        stmt = select(func.count()).select_from(eval_metrics_table).where(
+            eval_metrics_table.c.eval_job_id == eval_job_id,
+            eval_metrics_table.c.metrics["status"].astext == "completed"
+        )
+        processed_count = session.execute(stmt).scalar_one()
+        
+        stmt = update(eval_job_table).where(
+            eval_job_table.c.id == eval_job_id
+        ).values(processed_qa_pairs=processed_count)
+        session.execute(stmt)
+        
+        # If all are processed, mark job as completed
+        if pending_count == 0:
+            from datetime import datetime
+            stmt = update(eval_job_table).where(
+                eval_job_table.c.id == eval_job_id
+            ).values(
+                status="completed",
+                completed_at=datetime.utcnow()
+            )
             session.execute(stmt)
         
         session.commit()

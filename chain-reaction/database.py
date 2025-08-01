@@ -1,7 +1,7 @@
 import os
 from uuid import uuid4
 from datetime import datetime
-from sqlalchemy import create_engine, Table, Column, String, DateTime, ForeignKey, text, Integer, Float
+from sqlalchemy import create_engine, Table, Column, String, DateTime, ForeignKey, text, Integer, Float, Boolean
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
@@ -29,6 +29,7 @@ task_queue = Queue(connection=redis_conn)
 github_queue = Queue('github', connection=redis_conn)
 rag_queue = Queue('rag', connection=redis_conn)
 qa_queue = Queue('qa', connection=redis_conn)
+eval_queue = Queue('eval', connection=redis_conn)
 
 # DB table setup. On init, create the tables if they don't exist
 """
@@ -70,6 +71,23 @@ qa_queue = Queue('qa', connection=redis_conn)
     - question_score (float)
     - chunk_score (float)
     - added_at
+- EvalJob
+    - id (auto gen uuid)
+    - qa_batch_id (foreign key to GoldQABatch.id)
+    - repo_id (foreign key to Repo.id)
+    - status (idle, running, completed, failed)
+    - total_qa_pairs (int)
+    - processed_qa_pairs (int)
+    - created_at
+    - completed_at
+- EvalMetrics
+    - id (auto gen uuid)
+    - eval_job_id (foreign key to EvalJob.id)
+    - qa_id (foreign key to GoldQA.id)
+    - actual_answer (str)
+    - relevant_chunks (jsonb)
+    - metrics (jsonb) - stores all metric scores and reasons
+    - created_at
 """
 repo_table = Table("repos", metadata,
     Column("id", UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")),
@@ -113,7 +131,27 @@ gold_qa_table = Table("gold_qa", metadata,
     Column("question_score", Float, nullable=True),
     Column("chunk_score", Float, nullable=True),
     Column("flow_logs", JSONB, nullable=True),
+    Column("archived", Boolean, nullable=False, default=False),
     Column("added_at", DateTime, nullable=False, default=datetime.utcnow),
+)
+eval_job_table = Table("eval_jobs", metadata,
+    Column("id", UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")),
+    Column("qa_batch_id", UUID(as_uuid=True), ForeignKey("gold_qa_batches.id"), nullable=False),
+    Column("repo_id", UUID(as_uuid=True), ForeignKey("repos.id"), nullable=False),
+    Column("status", String, nullable=False, default="idle"),
+    Column("total_qa_pairs", Integer, nullable=False, default=0),
+    Column("processed_qa_pairs", Integer, nullable=False, default=0),
+    Column("created_at", DateTime, nullable=False, default=datetime.utcnow),
+    Column("completed_at", DateTime, nullable=True),
+)
+eval_metrics_table = Table("eval_metrics", metadata,
+    Column("id", UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")),
+    Column("eval_job_id", UUID(as_uuid=True), ForeignKey("eval_jobs.id"), nullable=False),
+    Column("qa_id", UUID(as_uuid=True), ForeignKey("gold_qa.id"), nullable=False),
+    Column("actual_answer", String, nullable=False),
+    Column("relevant_chunks", JSONB, nullable=False),
+    Column("metrics", JSONB, nullable=False),
+    Column("created_at", DateTime, nullable=False, default=datetime.utcnow),
 )
 
 def create_tables():
