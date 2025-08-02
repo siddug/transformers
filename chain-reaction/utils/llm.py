@@ -3,6 +3,28 @@
 
 import requests
 import json
+import base64
+import mimetypes
+
+
+def get_data_url_and_mimetype(image_url):
+    # Fetch the image content
+    response = requests.get(image_url)
+    response.raise_for_status()
+
+    # Try to get mimetype from headers
+    mimetype = response.headers.get('Content-Type')
+    if not mimetype:
+        # Fallback: guess based on file extension
+        mimetype, _ = mimetypes.guess_type(image_url)
+
+    # Encode image as base64
+    base64_data = base64.b64encode(response.content).decode('utf-8')
+
+    # Form data URL
+    data_url = f"data:{mimetype};base64,{base64_data}"
+
+    return data_url, mimetype
 
 class LLM:
     def __init__(self, api_key: str):
@@ -24,13 +46,16 @@ class LLM:
 class Mistral(LLM):
     models = {
         "mistral-large-latest": {
-            "supportsImages": True,
+            "supportsImages": False,
         },
         "mistral-embed": {
             "supportsEmbeddings": True,
         },
         "codestral-embed": {
             "supportsEmbeddings": True,
+        },
+        "mistral-medium-latest": {
+            "supportsImages": True,
         }
     }
 
